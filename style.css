@@ -21,25 +21,33 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.5;
+  line-height: 1.55;
+  /* Subtle depth: a faint radial wash so the page doesn't read as flat black. */
+  background-image: radial-gradient(1100px 320px at 50% -120px, rgba(79, 140, 255, 0.08), transparent 70%);
+  background-repeat: no-repeat;
 }
 
 /* ---------- Header ---------- */
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1.5rem;
+  padding: 0.85rem 1.5rem;
   border-bottom: 1px solid var(--border);
-  background: #12161d;
+  background: rgba(18, 22, 29, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   flex-wrap: wrap;
 }
 
 .brand { display: flex; align-items: center; gap: 0.75rem; }
 .logo { font-size: 1.8rem; color: var(--accent); line-height: 1; }
-.topbar h1 { margin: 0; font-size: 1.25rem; letter-spacing: 0.01em; }
-.subtitle { margin: 0; color: var(--muted); font-size: 0.85rem; }
+.topbar h1 { margin: 0; font-size: 1.25rem; letter-spacing: -0.01em; font-weight: 650; }
+.subtitle { margin: 0.1rem 0 0; color: var(--muted); font-size: 0.85rem; }
 
 .pill {
   font-size: 0.8rem;
@@ -49,6 +57,7 @@ body {
   background: var(--surface-2);
   color: var(--muted);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .pill.ok { color: var(--ok); border-color: rgba(63, 178, 127, 0.5); }
 .pill.warn { color: var(--warn); border-color: rgba(229, 161, 59, 0.5); }
@@ -82,6 +91,18 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem 1.1rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  /* Staggered entrance (Magic UI / React Bits style, hand-rolled in CSS):
+     cards rise in sequence on first paint. */
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.layout > .card:nth-child(1) { animation-delay: 0.02s; }
+.layout > .card:nth-child(2) { animation-delay: 0.1s; }
+.layout > .card:nth-child(3) { animation-delay: 0.18s; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .card-head {
@@ -90,20 +111,21 @@ body {
   gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
-.card-head h2 { margin: 0; font-size: 1.05rem; flex: 1; }
+.card-head h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.01em; font-weight: 650; flex: 1; }
 
 .status-dot {
   width: 10px; height: 10px;
   border-radius: 50%;
   background: #5a6675;
   flex: none;
+  transition: background-color 200ms ease, box-shadow 200ms ease;
 }
 .status-dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(63, 178, 127, 0.8); }
 .status-dot.rec { background: var(--danger); box-shadow: 0 0 8px rgba(229, 72, 77, 0.9); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
 #cameraStatusText { color: var(--muted); font-size: 0.85rem; }
-.count { color: var(--muted); font-size: 0.85rem; }
+.count { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 
 /* ---------- Camera stage ---------- */
 .stage {
@@ -113,6 +135,7 @@ body {
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--border);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 .stage video, .stage canvas {
   position: absolute;
@@ -135,7 +158,7 @@ body {
   color: var(--muted);
   background: #0a0d12;
 }
-.stage-empty .empty-title { color: var(--text); font-weight: 600; margin: 0 0 0.25rem; }
+.stage-empty .empty-title { color: var(--text); font-weight: 600; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
 .stage-empty p { margin: 0; max-width: 340px; font-size: 0.9rem; }
 
 /* Fallback face-box guide */
@@ -155,6 +178,11 @@ body {
   border: 2px dashed var(--warn);
   border-radius: 46% 46% 42% 42% / 55% 55% 45% 45%;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.25);
+  animation: breathe 3.2s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.015); opacity: 0.85; }
 }
 .face-guide-text {
   margin: 0;
@@ -176,6 +204,7 @@ body {
   font-size: 0.85rem;
   color: var(--text);
   min-height: 2.4em;
+  font-variant-numeric: tabular-nums;
 }
 .status-line .warn-text { color: var(--warn); }
 
@@ -184,17 +213,21 @@ body {
 .btn {
   font: inherit;
   font-size: 0.9rem;
+  font-weight: 550;
   padding: 0.55rem 1rem;
   border-radius: 9px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
   cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 100ms ease, filter 150ms ease;
 }
 .btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.12); }
 .btn.danger.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 .hint { color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0; }
@@ -208,7 +241,10 @@ body {
   border-radius: 10px;
   padding: 0.75rem;
   background: var(--surface-2);
+  transition: border-color 150ms ease, transform 150ms ease;
+  animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+.clip:hover { border-color: #3a465a; }
 .clip video { width: 100%; border-radius: 8px; background: #000; display: block; }
 .clip-meta {
   display: flex;
@@ -218,6 +254,7 @@ body {
   color: var(--muted);
   margin: 0.5rem 0;
   flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
 }
 .clip-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .clip-note {
@@ -254,4 +291,15 @@ body {
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; }
   .camera-card { grid-row: auto; }
+  .topbar { padding: 0.75rem 1rem; }
+}
+
+/* Motion should clarify, not gate: honour reduced-motion everywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
