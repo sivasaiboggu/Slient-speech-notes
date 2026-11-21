@@ -283,6 +283,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .clip-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.clip-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .clip-note {
   margin: 0.5rem 0 0;
   font-size: 0.85rem;

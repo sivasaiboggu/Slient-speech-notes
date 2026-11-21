@@ -102,6 +102,12 @@ async function startCamera() {
 
   video.srcObject = stream;
   await video.play().catch(() => {});
+  // If the camera disappears mid-session (unplugged, permission revoked,
+  // another app takes it), the track fires 'ended' — stop cleanly and say so.
+  const videoTrack = stream.getVideoTracks()[0];
+  if (videoTrack && videoTrack.addEventListener) {
+    videoTrack.addEventListener('ended', onCameraTrackEnded);
+  }
   stageEmpty.style.display = 'none';
   stage.classList.add('live');
   cameraDot.classList.add('on');
@@ -142,6 +148,16 @@ function stopCamera() {
   else updateStatusLine();
 }
 
+function onCameraTrackEnded() {
+  // Guard: stopCamera() also stops the tracks, which fires 'ended' — but by
+  // the time that event is delivered, stream is already null, so a clean stop
+  // never reaches here. Only an unexpected disappearance does.
+  if (!stream) return;
+  stopCamera();
+  statusLine.textContent = 'Status: camera stopped unexpectedly — it may have been ' +
+    'unplugged or taken by another app. Press Start camera to try again.';
+}
+
 function resizeOverlay() {
   const rect = video.getBoundingClientRect();
   overlay.width = Math.max(1, Math.round(rect.width * window.devicePixelRatio));
@@ -156,31 +172,38 @@ function initFaceMesh() {
     return;
   }
   setModelState('loading');
-  try {
-    faceMesh = new FaceMesh({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-    });
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: false,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-    faceMesh.onResults(onFaceResults);
-    trackingActive = true;
-    lastResultsAt = 0;
-    // Watchdog: if the model never produces a result, say so instead of spinning forever.
-    modelWatchdog = setTimeout(() => {
-      if (modelState === 'loading' && !lastResultsAt) {
-        trackingActive = false;
-        setModelState('failed', 'Model did not return results in time (CDN/model load failed).');
-      }
-    }, 20000);
-    requestAnimationFrame(trackLoop);
-  } catch (err) {
-    trackingActive = false;
-    setModelState('failed', `Face Mesh could not start: ${err.message || err}`);
+  lastResultsAt = 0;
+  // Reuse the existing FaceMesh instance across camera restarts and retries:
+  // constructing a new one on every Start leaked an instance per cycle.
+  if (!faceMesh) {
+    try {
+      faceMesh = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      });
+      faceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      faceMesh.onResults(onFaceResults);
+    } catch (err) {
+      trackingActive = false;
+      setModelState('failed', `Face Mesh could not start: ${err.message || err}`);
+      return;
+    }
   }
+  trackingActive = true;
+  // Watchdog: if the model never produces a result, say so instead of spinning
+  // forever. 30s, not 20s — model weights over a slow mobile connection can
+  // legitimately take longer than 20s, and a retry on the next Start is cheap.
+  modelWatchdog = setTimeout(() => {
+    if (modelState === 'loading' && !lastResultsAt) {
+      trackingActive = false;
+      setModelState('failed', 'Model did not return results in time (CDN/model load failed).');
+    }
+  }, 30000);
+  requestAnimationFrame(trackLoop);
 }
 
 async function trackLoop() {
@@ -205,14 +228,20 @@ function onFaceResults(results) {
   if (modelState !== 'loaded') setModelState('loaded');
   resizeOverlayIfNeeded();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
-  const faces = results.multiFaceLandmarks;
+  // Guard against a null/partial result: a malformed callback must never
+  // throw inside the tracking loop.
+  const faces = results && results.multiFaceLandmarks;
   if (!faces || faces.length === 0) {
     ctx.fillStyle = 'rgba(232, 236, 241, 0.85)';
     ctx.font = `${Math.round(overlay.height * 0.035)}px system-ui, sans-serif`;
     ctx.fillText('No face detected — move into frame', 16, 32);
     return;
   }
-  drawLips(faces[0]);
+  const landmarks = faces[0];
+  // A landmark set must be a full 468-point array; anything else (a single
+  // point object, a short array, nulls) is skipped, never drawn from.
+  if (!Array.isArray(landmarks) || landmarks.length < 468) return;
+  drawLips(landmarks);
 }
 
 let lastOverlaySize = '';
@@ -228,13 +257,18 @@ function resizeOverlayIfNeeded() {
 function drawLips(landmarks) {
   const w = overlay.width;
   const h = overlay.height;
-  const pts = (indices) => indices.map((i) => [landmarks[i].x * w, landmarks[i].y * h]);
+  const pts = (indices) => indices.map((i) => {
+    const pt = landmarks[i];
+    return pt ? [pt.x * w, pt.y * h] : [NaN, NaN]; // dropped by the polyline filter below
+  });
 
-  // Lip landmark points.
+  // Lip landmark points (skip any index the model did not supply).
   ctx.fillStyle = '#4f8cff';
   for (const idx of [...LIPS_OUTER, ...LIPS_INNER]) {
-    const x = landmarks[idx].x * w;
-    const y = landmarks[idx].y * h;
+    const pt = landmarks[idx];
+    if (!pt) continue;
+    const x = pt.x * w;
+    const y = pt.y * h;
     ctx.beginPath();
     ctx.arc(x, y, Math.max(2, w * 0.004), 0, Math.PI * 2);
     ctx.fill();
@@ -242,7 +276,8 @@ function drawLips(landmarks) {
 
   // Lip outlines.
   const drawPolyline = (indices, color, width) => {
-    const p = pts(indices);
+    const p = pts(indices).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+    if (p.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.lineJoin = 'round';
@@ -281,6 +316,7 @@ function startRecording() {
   recordStartedAt = Date.now();
   recordBtn.textContent = '■ Stop recording';
   recordBtn.classList.add('recording');
+  recordBtn.setAttribute('aria-pressed', 'true');
   cameraDot.classList.add('rec');
   updateStatusLine();
 }
@@ -290,6 +326,7 @@ function stopRecording() {
   recording = false;
   recordBtn.textContent = '● Record clip';
   recordBtn.classList.remove('recording');
+  recordBtn.setAttribute('aria-pressed', 'false');
   cameraDot.classList.remove('rec');
   updateStatusLine();
 }
@@ -323,6 +360,7 @@ function addClip(url, durationSec, sizeBytes) {
     </div>
     <div class="clip-actions">
       <button class="btn transcribe-btn" type="button">Transcribe</button>
+      <a class="btn download-btn" href="${escapeHtml(url)}" download="silent-speech-clip-${clipTotal}.webm">Download</a>
       <button class="btn delete-btn" type="button">Delete</button>
     </div>
     <p class="clip-note"></p>`;
@@ -350,11 +388,18 @@ function takeSnapshot() {
   const c = document.createElement('canvas');
   c.width = video.videoWidth;
   c.height = video.videoHeight;
-  c.getContext('2d').drawImage(video, 0, 0);
+  const sctx = c.getContext('2d');
+  sctx.drawImage(video, 0, 0);
+  // Include the lip-tracking overlay when tracking is live, so the snapshot
+  // shows what the user actually saw (landmarks included).
+  if (modelState === 'loaded') sctx.drawImage(overlay, 0, 0, c.width, c.height);
   const a = document.createElement('a');
   a.href = c.toDataURL('image/png');
   a.download = `silent-speech-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
   a.click();
+  // Confirm briefly, then restore the normal status line.
+  statusLine.textContent = 'Status: snapshot saved — check your downloads folder.';
+  setTimeout(updateStatusLine, 3000);
 }
 
 // ---------- Wiring ----------
