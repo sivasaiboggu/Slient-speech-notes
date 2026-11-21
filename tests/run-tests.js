@@ -1,0 +1,413 @@
+// Silent-Speech Notes — automated checks (jsdom, no real camera needed).
+//
+// Run:  npm install && npm test
+// What it covers:
+//   - initial render + honest note visible, correct button states
+//   - CDN-failure fallback (face-box guide) and no-camera states
+//   - lip-tracking draw path with fake landmarks, incl. malformed results
+//   - stop-while-loading pill reset + FaceMesh instance reuse on restart
+//   - late-result race (results arriving after Stop are ignored)
+//   - recording flow: clip added, download link, transcribe note, delete
+//   - snapshot includes the lip overlay and confirms with a status message
+//   - unexpected camera-track end stops cleanly with a plain message
+//   - camera denied / camera API missing -> plain-language status, no crash
+//
+// Nothing here touches a real camera or claims anything about one. The live
+// camera check has to happen on a real device (see README).
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { JSDOM, VirtualConsole } = require('jsdom');
+
+const ROOT = path.join(__dirname, '..');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const LANDMARKS = () => Array.from({ length: 468 }, (_, i) => ({ x: 0.3 + (i % 10) * 0.01, y: 0.5 }));
+
+let passed = 0;
+let failed = 0;
+function check(name, cond, extra) {
+  if (cond) {
+    passed += 1;
+    console.log(`  ok   ${name}`);
+  } else {
+    failed += 1;
+    console.log(`  FAIL ${name}${extra !== undefined ? ` — ${extra}` : ''}`);
+  }
+}
+
+// Build a fresh page. opts:
+//   faceMesh: 'fake' | 'missing'   (default 'fake')
+//   sendNever: true                 (FaceMesh.send never resolves -> model stays loading)
+//   gum: 'ok' | 'denied' | 'missing' (default 'ok')
+async function makePage(opts = {}) {
+  const faceMeshMode = opts.faceMesh || 'fake';
+  const htmlRaw = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  // Inline the app script and strip external resources so the test needs no server.
+  const html = htmlRaw
+    .replace(/<script[^>]*face_mesh[^>]*><\/script>/, '<!-- face_mesh cdn stripped for tests -->')
+    .replace(/<link[^>]*stylesheet[^>]*>/, '<!-- stylesheet stripped for tests -->')
+    .replace(/<script src="app\.js"><\/script>/, () => `<script>${appJs}</script>`);
+
+  const errors = [];
+  const vc = new VirtualConsole();
+  vc.on('jsdomError', (e) => errors.push('jsdomError: ' + String(e.detail || e.message).split('\n')[0]));
+
+  const contexts = []; // every 2d context created, in creation order
+  const dom = new JSDOM(html, {
+    url: 'http://localhost:8137/',
+    resources: 'usable',
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+    virtualConsole: vc,
+    beforeParse(window) {
+      window.HTMLCanvasElement.prototype.getContext = function () {
+        const calls = [];
+        const ctx = new Proxy({}, {
+          get(t, p) {
+            if (typeof p === 'symbol') return undefined;
+            return (...a) => { calls.push({ method: String(p), args: a }); };
+          },
+          set(t, p, v) { calls.push({ method: 'set:' + String(p), args: [v] }); return true; },
+        });
+        contexts.push({ canvas: this, ctx, calls });
+        return ctx;
+      };
+      window.HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };
+      try {
+        Object.defineProperty(window.HTMLVideoElement.prototype, 'readyState', { configurable: true, get() { return 4; } });
+        Object.defineProperty(window.HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get() { return 1280; } });
+        Object.defineProperty(window.HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get() { return 720; } });
+      } catch (e) { /* jsdom may not allow the override; draw tests still work via the callback */ }
+      window.URL.createObjectURL = () => 'blob:fake-clip';
+      window.URL.revokeObjectURL = () => {};
+      // jsdom has no real canvas bitmap: stub toDataURL, and record anchor
+      // clicks instead of letting jsdom "navigate" on a download click.
+      window.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,fake';
+      window.__anchorClicks = [];
+      window.HTMLAnchorElement.prototype.click = function () {
+        window.__anchorClicks.push({ href: this.href, download: this.getAttribute('download') });
+      };
+      window.__faceMeshCount = 0;
+      window.__sendCalls = 0;
+      window.__recorders = [];
+      window.__sendNever = !!opts.sendNever;
+
+      // Fake camera stream + track.
+      const makeTrack = () => ({
+        stopCalls: 0,
+        handlers: {},
+        kind: 'video',
+        stop() { this.stopCalls += 1; },
+        addEventListener(type, fn) { this.handlers[type] = fn; },
+        removeEventListener() {},
+      });
+      if (opts.gum !== 'missing') {
+        window.navigator.mediaDevices = {
+          getUserMedia: async () => {
+            if (opts.gum === 'denied') {
+              const err = new Error('Permission denied');
+              err.name = 'NotAllowedError';
+              throw err;
+            }
+            const track = makeTrack();
+            const stream = { getTracks: () => [track], getVideoTracks: () => [track], _track: track };
+            window.__stream = stream;
+            return stream;
+          },
+        };
+      }
+
+      // Fake MediaRecorder.
+      window.MediaRecorder = class FakeMediaRecorder {
+        static isTypeSupported() { return true; }
+        constructor(stream) { this.stream = stream; this.state = 'inactive'; this.mimeType = 'video/webm'; window.__recorders.push(this); }
+        start() { this.state = 'recording'; }
+        stop() {
+          this.state = 'inactive';
+          if (this.ondataavailable) this.ondataavailable({ data: new window.Blob(['clip-bytes'], { type: 'video/webm' }) });
+          if (this.onstop) this.onstop();
+        }
+      };
+
+      if (faceMeshMode === 'fake') {
+        window.FaceMesh = class FakeFaceMesh {
+          constructor() { window.__faceMeshCount += 1; }
+          setOptions() {}
+          onResults(cb) { window.__faceMeshCb = cb; }
+          async send() {
+            window.__sendCalls += 1;
+            if (window.__sendNever) await new Promise(() => {});
+            else await sleep(5);
+          }
+        };
+      }
+    },
+  });
+
+  const { window } = dom;
+  const { document } = window;
+  await new Promise((res) => {
+    if (document.readyState === 'complete') res();
+    else window.addEventListener('load', res);
+    setTimeout(res, 8000);
+  });
+  await sleep(200);
+  const q = (s) => document.querySelector(s);
+  return { window, document, q, errors, contexts };
+}
+
+function overlayCalls(page) {
+  return page.contexts.length ? page.contexts[0].calls : [];
+}
+function drawCallCount(page) {
+  return overlayCalls(page).filter((c) => c.method === 'arc' || c.method === 'moveTo' || c.method === 'lineTo').length;
+}
+
+async function testInitialRender() {
+  console.log('initial render');
+  const page = await makePage();
+  const { q, errors } = page;
+  check('honest note present and says transcription is NOT included',
+    q('.honest-note').textContent.includes('NOT included'));
+  check('pill starts at "Model: not loaded"', q('#modelPill').textContent === 'Model: not loaded');
+  check('Start enabled, Stop/Record/Snapshot disabled',
+    !q('#startBtn').disabled && q('#stopBtn').disabled && q('#recordBtn').disabled && q('#snapshotBtn').disabled);
+  check('clip count is "0 clips"', q('#clipCount').textContent === '0 clips');
+  check('empty-clips message shown', !!q('#clipEmpty'));
+  check('record button aria-pressed is false', q('#recordBtn').getAttribute('aria-pressed') === 'false');
+  check('no JS errors on load', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testCdnFailure() {
+  console.log('CDN failure fallback');
+  const page = await makePage({ faceMesh: 'missing' });
+  const { q, errors } = page;
+  check('pill reports model failed', q('#modelPill').textContent.includes('failed'));
+  check('status explains the CDN failure', q('#statusLine').textContent.includes('did not load from the CDN'));
+  check('face-box guide hidden until camera starts', q('#faceGuide').hidden === true);
+  q('#startBtn').click();
+  await sleep(300);
+  check('face-box guide appears once camera is on', q('#faceGuide').hidden === false);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testTrackingDraw() {
+  console.log('tracking draw path');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(400);
+  check('pill shows loading while model starts', q('#modelPill').textContent.includes('loading'), q('#modelPill').textContent);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(300);
+  check('pill flips to loaded after results', q('#modelPill').textContent.includes('loaded'));
+  check('status says lip tracking active', q('#statusLine').textContent.includes('Lip tracking active'));
+  check('lip points and outlines drawn', drawCallCount(page) > 50, `draw calls: ${drawCallCount(page)}`);
+  check('face guide stays hidden when loaded', q('#faceGuide').hidden === true);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testNoFaceAndMalformed() {
+  console.log('no-face + malformed results');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  window.__faceMeshCb({ multiFaceLandmarks: [] });
+  await sleep(150);
+  const noFaceText = overlayCalls(page).some((c) => c.method === 'fillText' && String(c.args[0]).includes('No face detected'));
+  check('empty face list draws "No face detected"', noFaceText);
+  // Malformed results must never throw inside the tracking loop.
+  window.__faceMeshCb(null);
+  window.__faceMeshCb(undefined);
+  window.__faceMeshCb({ multiFaceLandmarks: [{ x: 0.5, y: 0.5 }] }); // 1 landmark, not 468
+  window.__faceMeshCb({ multiFaceLandmarks: [null] });
+  window.__faceMeshCb({});
+  await sleep(200);
+  check('malformed results do not throw', errors.length === 0, JSON.stringify(errors));
+  check('pill still loaded after malformed frames', q('#modelPill').textContent.includes('loaded'));
+  page.window.close();
+}
+
+async function testStopWhileLoading() {
+  console.log('stop while loading + FaceMesh reuse');
+  const page = await makePage({ sendNever: true });
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  check('pill is loading', q('#modelPill').textContent.includes('loading'));
+  q('#stopBtn').click();
+  await sleep(150);
+  check('pill resets to not loaded after stop', q('#modelPill').textContent === 'Model: not loaded', q('#modelPill').textContent);
+  check('Start re-enabled after stop', !q('#startBtn').disabled);
+  q('#startBtn').click();
+  await sleep(300);
+  check('FaceMesh instance reused on restart (no leak)', window.__faceMeshCount === 1, `instances: ${window.__faceMeshCount}`);
+  check('pill is loading again on retry', q('#modelPill').textContent.includes('loading'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testLateResultIgnored() {
+  console.log('late-result race');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(200);
+  const drawsBeforeStop = drawCallCount(page);
+  check('loaded before stop', q('#modelPill').textContent.includes('loaded'));
+  q('#stopBtn').click();
+  await sleep(150);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] }); // late result
+  await sleep(200);
+  check('late result draws nothing after stop', drawCallCount(page) === drawsBeforeStop,
+    `before ${drawsBeforeStop}, after ${drawCallCount(page)}`);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+
+  // Variant: stop while still loading, then a late result must not flip the pill.
+  const page2 = await makePage({ sendNever: true });
+  page2.q('#startBtn').click();
+  await sleep(300);
+  page2.q('#stopBtn').click();
+  await sleep(150);
+  page2.window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(200);
+  check('late result does not revive pill after stop-while-loading',
+    page2.q('#modelPill').textContent === 'Model: not loaded', page2.q('#modelPill').textContent);
+  check('no JS errors (variant)', page2.errors.length === 0, JSON.stringify(page2.errors));
+  page2.window.close();
+}
+
+async function testRecordingFlow() {
+  console.log('recording flow');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  q('#recordBtn').click();
+  await sleep(150);
+  check('record button shows stop state + aria-pressed true',
+    q('#recordBtn').textContent.includes('Stop recording') && q('#recordBtn').getAttribute('aria-pressed') === 'true');
+  q('#recordBtn').click();
+  await sleep(300);
+  check('clip added, count is "1 clip"', q('#clipCount').textContent === '1 clip', q('#clipCount').textContent);
+  check('clip has a Download link with download attribute',
+    !!q('.clip .download-btn') && q('.clip .download-btn').getAttribute('download') === 'silent-speech-clip-1.webm');
+  check('clip video src is the blob URL', q('.clip video').getAttribute('src') === 'blob:fake-clip');
+  q('.clip .transcribe-btn').click();
+  await sleep(100);
+  check('Transcribe says plainly it is not available',
+    q('.clip .clip-note').textContent.includes('not available in this prototype'));
+  check('Transcribe button disables after one click', q('.clip .transcribe-btn').disabled === true);
+  q('.clip .delete-btn').click();
+  await sleep(100);
+  check('delete removes clip, count back to 0', q('#clipCount').textContent === '0 clips');
+  check('empty-clips message returns', !!q('#clipEmpty'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testSnapshot() {
+  console.log('snapshot');
+  const page = await makePage();
+  const { window, q, errors, contexts } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(200);
+  const ctxCountBefore = contexts.length;
+  q('#snapshotBtn').click();
+  await sleep(200);
+  check('snapshot creates a new canvas', contexts.length === ctxCountBefore + 1, `${ctxCountBefore} -> ${contexts.length}`);
+  const snapCalls = contexts[contexts.length - 1].calls.filter((c) => c.method === 'drawImage');
+  check('snapshot draws video frame + lip overlay (2 drawImage calls)', snapCalls.length === 2, `drawImage calls: ${snapCalls.length}`);
+  const snapClick = window.__anchorClicks.find((a) => (a.download || '').startsWith('silent-speech-'));
+  check('snapshot triggers a download named silent-speech-*.png',
+    !!snapClick && snapClick.download.endsWith('.png'), JSON.stringify(snapClick || null));
+  check('status confirms the snapshot saved', q('#statusLine').textContent.includes('snapshot saved'));
+  await sleep(3200);
+  check('status line restores after a few seconds', q('#statusLine').textContent.includes('Camera on'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testTrackEnded() {
+  console.log('unexpected camera-track end');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  check('camera on before track ends', q('#cameraStatusText').textContent === 'Camera on');
+  window.__stream._track.handlers.ended();
+  await sleep(200);
+  check('camera shows off after track ends', q('#cameraStatusText').textContent === 'Camera off');
+  check('Start re-enabled after unexpected stop', !q('#startBtn').disabled);
+  check('status explains the camera stopped unexpectedly',
+    q('#statusLine').textContent.includes('stopped unexpectedly'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testCameraDenied() {
+  console.log('camera denied');
+  const page = await makePage({ gum: 'denied' });
+  const { q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  check('status names the denial plainly', q('#statusLine').textContent.includes('NotAllowedError'));
+  check('Start re-enabled so the user can retry', !q('#startBtn').disabled);
+  check('Stop stays disabled', q('#stopBtn').disabled === true);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testNoCameraApi() {
+  console.log('no camera API at all');
+  const page = await makePage({ gum: 'missing' });
+  const { q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  check('status says the browser does not expose camera access (no raw TypeError)',
+    q('#statusLine').textContent.includes('does not expose camera access') &&
+    !q('#statusLine').textContent.includes('TypeError'));
+  check('Start re-enabled', !q('#startBtn').disabled);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+function testStaticCss() {
+  console.log('static CSS sanity');
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  const opens = (css.match(/\{/g) || []).length;
+  const closes = (css.match(/\}/g) || []).length;
+  check('style.css braces balance', opens === closes && opens > 0, `{ ${opens} } ${closes}`);
+  check('no TODO/FIXME left in CSS', !/TODO|FIXME/.test(css));
+}
+
+async function main() {
+  await testInitialRender();
+  await testCdnFailure();
+  await testTrackingDraw();
+  await testNoFaceAndMalformed();
+  await testStopWhileLoading();
+  await testLateResultIgnored();
+  await testRecordingFlow();
+  await testSnapshot();
+  await testTrackEnded();
+  await testCameraDenied();
+  await testNoCameraApi();
+  testStaticCss();
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+}
+
+main().catch((e) => { console.error('DRIVER ERROR:', e); process.exit(1); });
