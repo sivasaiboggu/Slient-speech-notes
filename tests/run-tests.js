@@ -7,10 +7,14 @@
 //   - lip-tracking draw path with fake landmarks, incl. malformed results
 //   - stop-while-loading pill reset + FaceMesh instance reuse on restart
 //   - late-result race (results arriving after Stop are ignored)
-//   - recording flow: clip added, download link, transcribe note, delete
+//   - recording flow: clip added, download link, transcribe note, delete,
+//     monotonic clip numbering after a delete, 12-clip cap
 //   - snapshot includes the lip overlay and confirms with a status message
 //   - unexpected camera-track end stops cleanly with a plain message
-//   - camera denied / camera API missing -> plain-language status, no crash
+//   - camera denied / no camera / camera API missing -> plain-language
+//     status, no raw error names, no crash
+//   - camera switch offered only with 2+ devices, and it switches
+//   - live track stats (fps + lip aperture) update from real results
 //
 // Nothing here touches a real camera or claims anything about one. The live
 // camera check has to happen on a real device (see README).
@@ -48,7 +52,7 @@ async function makePage(opts = {}) {
   // Inline the app script and strip external resources so the test needs no server.
   const html = htmlRaw
     .replace(/<script[^>]*face_mesh[^>]*><\/script>/, '<!-- face_mesh cdn stripped for tests -->')
-    .replace(/<link[^>]*stylesheet[^>]*>/, '<!-- stylesheet stripped for tests -->')
+    .replace(/<link[^>]*>/g, '<!-- link stripped for tests -->')
     .replace(/<script src="app\.js"><\/script>/, () => `<script>${appJs}</script>`);
 
   const errors = [];
@@ -93,6 +97,7 @@ async function makePage(opts = {}) {
       window.__faceMeshCount = 0;
       window.__sendCalls = 0;
       window.__recorders = [];
+      window.__gumCalls = [];
       window.__sendNever = !!opts.sendNever;
 
       // Fake camera stream + track.
@@ -106,10 +111,16 @@ async function makePage(opts = {}) {
       });
       if (opts.gum !== 'missing') {
         window.navigator.mediaDevices = {
-          getUserMedia: async () => {
+          getUserMedia: async (constraints) => {
+            window.__gumCalls.push(constraints);
             if (opts.gum === 'denied') {
               const err = new Error('Permission denied');
               err.name = 'NotAllowedError';
+              throw err;
+            }
+            if (opts.gum === 'notfound') {
+              const err = new Error('Requested device not found');
+              err.name = 'NotFoundError';
               throw err;
             }
             const track = makeTrack();
@@ -118,6 +129,9 @@ async function makePage(opts = {}) {
             return stream;
           },
         };
+        if (opts.devices) {
+          window.navigator.mediaDevices.enumerateDevices = async () => opts.devices;
+        }
       }
 
       // Fake MediaRecorder.
@@ -363,9 +377,116 @@ async function testCameraDenied() {
   const { q, errors } = page;
   q('#startBtn').click();
   await sleep(300);
-  check('status names the denial plainly', q('#statusLine').textContent.includes('NotAllowedError'));
+  check('status says plainly that permission was denied (no raw error name)',
+    q('#statusLine').textContent.includes('permission was denied') &&
+    !q('#statusLine').textContent.includes('NotAllowedError'));
   check('Start re-enabled so the user can retry', !q('#startBtn').disabled);
   check('Stop stays disabled', q('#stopBtn').disabled === true);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testCameraNotFound() {
+  console.log('no camera on device');
+  const page = await makePage({ gum: 'notfound' });
+  const { q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  check('status says plainly that no camera was found',
+    q('#statusLine').textContent.includes('no camera was found') &&
+    !q('#statusLine').textContent.includes('NotFoundError'));
+  check('Start re-enabled', !q('#startBtn').disabled);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testSwitchCamera() {
+  console.log('switch camera');
+  const devices = [
+    { kind: 'videoinput', deviceId: 'cam1', label: 'Front' },
+    { kind: 'videoinput', deviceId: 'cam2', label: 'Back' },
+  ];
+  const page = await makePage({ devices });
+  const { window, q, errors } = page;
+  check('switch button hidden before camera starts', q('#switchBtn').hidden === true);
+  q('#startBtn').click();
+  await sleep(400);
+  check('switch button appears with 2 cameras', q('#switchBtn').hidden === false);
+  q('#switchBtn').click();
+  await sleep(400);
+  const secondCall = window.__gumCalls[1];
+  check('switch requests the other camera by deviceId',
+    !!secondCall && secondCall.video && secondCall.video.deviceId && secondCall.video.deviceId.exact === 'cam2',
+    JSON.stringify(secondCall || null));
+  check('camera still on after switch', q('#cameraStatusText').textContent === 'Camera on');
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+
+  // One camera only: no switch button, ever.
+  const single = await makePage({ devices: [{ kind: 'videoinput', deviceId: 'cam1', label: 'Only' }] });
+  single.q('#startBtn').click();
+  await sleep(400);
+  check('switch button stays hidden with 1 camera', single.q('#switchBtn').hidden === true);
+  check('no JS errors (single camera)', single.errors.length === 0, JSON.stringify(single.errors));
+  single.window.close();
+}
+
+async function recordOne(page) {
+  const { q } = page;
+  q('#recordBtn').click();
+  await sleep(80);
+  q('#recordBtn').click();
+  await sleep(200);
+}
+
+async function testClipNumbering() {
+  console.log('clip numbering after delete');
+  const page = await makePage();
+  const { q, errors, document } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  await recordOne(page);
+  await recordOne(page);
+  check('two clips recorded', q('#clipCount').textContent === '2 clips', q('#clipCount').textContent);
+  // Newest clip is first in the list; delete it.
+  document.querySelectorAll('.clip')[0].querySelector('.delete-btn').click();
+  await sleep(100);
+  check('count back to 1 after delete', q('#clipCount').textContent === '1 clip');
+  await recordOne(page);
+  check('next clip keeps a fresh number (no reuse after delete)',
+    !!document.querySelector('.download-btn[download="silent-speech-clip-3.webm"]'));
+  check('count is 2 again', q('#clipCount').textContent === '2 clips');
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testClipCap() {
+  console.log('12-clip cap');
+  const page = await makePage();
+  const { q, errors, document } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  for (let i = 0; i < 13; i += 1) await recordOne(page);
+  check('list caps at 12 clips', q('#clipCount').textContent === '12 clips', q('#clipCount').textContent);
+  check('oldest clip (Clip 1) was dropped',
+    !document.querySelector('.download-btn[download="silent-speech-clip-1.webm"]'));
+  check('newest clip (Clip 13) is kept',
+    !!document.querySelector('.download-btn[download="silent-speech-clip-13.webm"]'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testTrackStats() {
+  console.log('live track stats');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  check('stats line starts empty', q('#trackStats').textContent === '');
+  q('#startBtn').click();
+  await sleep(300);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(400);
+  check('stats show fps from real results', q('#trackStats').textContent.includes('fps'), q('#trackStats').textContent);
+  check('stats show lip aperture', q('#trackStats').textContent.includes('Lip aperture'), q('#trackStats').textContent);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 }
@@ -404,6 +525,11 @@ async function main() {
   await testSnapshot();
   await testTrackEnded();
   await testCameraDenied();
+  await testCameraNotFound();
+  await testSwitchCamera();
+  await testClipNumbering();
+  await testClipCap();
+  await testTrackStats();
   await testNoCameraApi();
   testStaticCss();
   console.log(`\n${passed} passed, ${failed} failed`);

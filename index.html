@@ -4,15 +4,28 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="Silent-Speech Notes prototype — live camera preview with lip-region landmark tracking in the browser. No lip-reading transcription; nothing is uploaded.">
-<meta name="theme-color" content="#0e1116">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%234f8cff' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%234f8cff'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#07080c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c5cff'/%3E%3Cstop offset='1' stop-color='%2338e1ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='url(%23g)' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='url(%23g)'/%3E%3C/svg%3E">
 <title>Silent-Speech Notes — Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="aurora" aria-hidden="true"></div>
+
   <header class="topbar">
     <div class="brand">
-      <span class="logo" aria-hidden="true">◉</span>
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="30" height="30" fill="none">
+          <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#38e1ff"/>
+          </linearGradient></defs>
+          <circle cx="16" cy="16" r="13" stroke="url(#lg)" stroke-width="2.5"/>
+          <circle cx="16" cy="16" r="4.5" fill="url(#lg)"/>
+        </svg>
+      </span>
       <div>
         <h1>Silent-Speech Notes</h1>
         <p class="subtitle">Camera + lip-region tracking prototype</p>
@@ -27,69 +40,104 @@
     and is <strong>NOT included</strong>. No transcripts are generated or claimed.
   </div>
 
-  <main class="layout">
-    <section class="card camera-card">
-      <div class="card-head">
-        <h2>Camera</h2>
-        <span class="status-dot" id="cameraDot" aria-hidden="true"></span>
-        <span id="cameraStatusText">Camera off</span>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow"><span class="eyebrow-dot"></span>Prototype · 100% on-device · Nothing uploaded</p>
+      <h2 class="hero-title">Mouth the words.<br>Watch your <span class="grad">lips</span> move.</h2>
+      <p class="hero-sub">Point your camera at your face and watch 468 lip landmarks track you
+      live in the browser. Your video never leaves this tab — and this prototype
+      does not transcribe, because real lip-reading needs a trained model it does not include.</p>
+      <div class="hero-cta">
+        <a class="btn primary hero-btn" href="#cameraCard">Open the camera ↓</a>
+        <a class="btn hero-btn" href="#howCard">How it works</a>
       </div>
+      <dl class="hero-stats">
+        <div><dt>468</dt><dd>landmarks tracked</dd></div>
+        <div><dt>0</dt><dd>bytes uploaded</dd></div>
+        <div><dt>100%</dt><dd>processed locally</dd></div>
+      </dl>
+    </section>
 
-      <div class="stage" id="stage">
-        <video id="video" autoplay muted playsinline></video>
-        <canvas id="overlay"></canvas>
-        <div class="stage-empty" id="stageEmpty">
-          <p class="empty-title">Camera preview</p>
-          <p>Press <strong>Start camera</strong> below. Your video stays in this browser tab — nothing is uploaded.</p>
+    <section class="steps" id="howCard" aria-label="How it works">
+      <div class="step"><span class="step-n">1</span><h3>Allow the camera</h3><p>Your video stays in this tab. Nothing is recorded until you press record.</p></div>
+      <div class="step"><span class="step-n">2</span><h3>Mouth words silently</h3><p>Blue dots and outlines follow your lips in real time while the model runs.</p></div>
+      <div class="step"><span class="step-n">3</span><h3>Record &amp; download</h3><p>Save clips and snapshots on this device. Transcription is not part of this prototype.</p></div>
+    </section>
+
+    <div class="layout">
+      <section class="card camera-card" id="cameraCard">
+        <div class="card-head">
+          <h2>Camera</h2>
+          <span class="status-dot" id="cameraDot" aria-hidden="true"></span>
+          <span id="cameraStatusText">Camera off</span>
         </div>
-        <!-- Fallback face-box guide, shown only when the model is unavailable -->
-        <div class="face-guide" id="faceGuide" hidden>
-          <div class="face-box"></div>
-          <p class="face-guide-text">Face-box guide — centre your face in the frame.<br>
-          Lip tracking is unavailable (model failed to load).</p>
+
+        <div class="stage" id="stage">
+          <video id="video" autoplay muted playsinline></video>
+          <canvas id="overlay"></canvas>
+          <span class="hud hud-live" id="liveChip" aria-hidden="true"><span class="hud-dot"></span>LIVE</span>
+          <span class="hud hud-res" id="resChip" hidden>1280×720</span>
+          <span class="hud hud-rec" id="recHud" hidden><span class="hud-dot"></span>REC&nbsp;<span id="recTimer">00:00</span></span>
+          <div class="stage-empty" id="stageEmpty">
+            <div class="wave" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+            <p class="empty-title">Camera preview</p>
+            <p>Press <strong>Start camera</strong> below. Your video stays in this browser tab — nothing is uploaded.</p>
+          </div>
+          <!-- Fallback face-box guide, shown only when the model is unavailable -->
+          <div class="face-guide" id="faceGuide" hidden>
+            <div class="face-box"></div>
+            <p class="face-guide-text">Face-box guide — centre your face in the frame.<br>
+            Lip tracking is unavailable (model failed to load).</p>
+          </div>
         </div>
-      </div>
 
-      <p class="status-line" id="statusLine" aria-live="polite">Status: idle. Camera off · Model not loaded.</p>
+        <p class="track-stats" id="trackStats"></p>
+        <p class="status-line" id="statusLine" aria-live="polite">Status: idle. Camera off · Model not loaded.</p>
 
-      <div class="controls">
-        <button id="startBtn" class="btn primary">Start camera</button>
-        <button id="stopBtn" class="btn" disabled>Stop camera</button>
-        <button id="recordBtn" class="btn danger" disabled aria-pressed="false">● Record clip</button>
-        <button id="snapshotBtn" class="btn" disabled>Snapshot</button>
-      </div>
+        <div class="controls">
+          <button id="startBtn" class="btn primary">Start camera</button>
+          <button id="stopBtn" class="btn" disabled>Stop camera</button>
+          <button id="switchBtn" class="btn" hidden>⇄ Switch camera</button>
+          <button id="recordBtn" class="btn danger" disabled aria-pressed="false">● Record clip</button>
+          <button id="snapshotBtn" class="btn" disabled>Snapshot</button>
+        </div>
 
-      <p class="hint">
-        Lip tracking draws the detected lip landmark points and outline on the live preview.
-        If the tracking model cannot load, a simple face-box guide is shown instead and the status line says so.
-        Recording captures short clips locally in your browser only.
-      </p>
-    </section>
+        <p class="hint">
+          Lip tracking draws the detected lip landmark points and outline on the live preview.
+          If the tracking model cannot load, a simple face-box guide is shown instead and the status line says so.
+          Recording captures short clips locally in your browser only.
+        </p>
+      </section>
 
-    <section class="card clips-card">
-      <div class="card-head">
-        <h2>Recorded clips</h2>
-        <span class="count" id="clipCount">0 clips</span>
-      </div>
-      <p class="hint">Clips are stored only in this browser session. Refreshing the page clears them.</p>
-      <ul class="clip-list" id="clipList">
-        <li class="clip-empty" id="clipEmpty">No clips yet — start the camera and record a short clip.</li>
-      </ul>
-    </section>
+      <section class="card clips-card">
+        <div class="card-head">
+          <h2>Recorded clips</h2>
+          <span class="count" id="clipCount">0 clips</span>
+        </div>
+        <p class="hint">Clips are stored only in this browser session — refreshing the page clears them. The list keeps the latest 12.</p>
+        <ul class="clip-list" id="clipList">
+          <li class="clip-empty" id="clipEmpty">No clips yet — start the camera and record a short clip.</li>
+        </ul>
+      </section>
 
-    <section class="card limits-card">
-      <h2>What this prototype does — and does not do</h2>
-      <ul class="limits">
-        <li><span class="yes">✓</span> Captures camera video in the browser (<code>getUserMedia</code>).</li>
-        <li><span class="yes">✓</span> Visualises lip-region landmarks in real time when the MediaPipe Face Mesh model loads.</li>
-        <li><span class="yes">✓</span> Records short clips locally with <code>MediaRecorder</code> and plays them back.</li>
-        <li><span class="no">✕</span> Does <strong>not</strong> read lips or produce transcripts.</li>
-        <li><span class="no">✕</span> Does <strong>not</strong> claim any accuracy — there is no recognition model here.</li>
-        <li><span class="no">✕</span> Does <strong>not</strong> upload video anywhere; everything stays on this device.</li>
-      </ul>
-      <p class="hint">Real silent-speech transcription would need a dedicated trained lip-reading model
-      (trained on video–text pairs), which is out of scope for this prototype.</p>
-    </section>
+      <section class="card limits-card">
+        <h2>What this prototype does — and does not do</h2>
+        <div class="limits-grid">
+          <ul class="limits">
+            <li><span class="yes">✓</span> Captures camera video in the browser (<code>getUserMedia</code>).</li>
+            <li><span class="yes">✓</span> Visualises lip-region landmarks in real time when the MediaPipe Face Mesh model loads.</li>
+            <li><span class="yes">✓</span> Records short clips locally with <code>MediaRecorder</code> and plays them back.</li>
+          </ul>
+          <ul class="limits">
+            <li><span class="no">✕</span> Does <strong>not</strong> read lips or produce transcripts.</li>
+            <li><span class="no">✕</span> Does <strong>not</strong> claim any accuracy — there is no recognition model here.</li>
+            <li><span class="no">✕</span> Does <strong>not</strong> upload video anywhere; everything stays on this device.</li>
+          </ul>
+        </div>
+        <p class="hint">Real silent-speech transcription would need a dedicated trained lip-reading model
+        (trained on video–text pairs), which is out of scope for this prototype.</p>
+      </section>
+    </div>
   </main>
 
   <footer class="footer">
