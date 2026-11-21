@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Silent-Speech Notes — Prototype</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◉</span>
+      <div>
+        <h1>Silent-Speech Notes</h1>
+        <p class="subtitle">Camera + lip-region tracking prototype</p>
+      </div>
+    </div>
+    <span class="pill" id="modelPill">Model: not loaded</span>
+  </header>
+
+  <!-- Honest note — always visible -->
+  <div class="honest-note" role="note">
+    <strong>Prototype demo</strong> — true lip-reading transcription needs a dedicated trained model
+    and is <strong>NOT included</strong>. No transcripts are generated or claimed.
+  </div>
+
+  <main class="layout">
+    <section class="card camera-card">
+      <div class="card-head">
+        <h2>Camera</h2>
+        <span class="status-dot" id="cameraDot" aria-hidden="true"></span>
+        <span id="cameraStatusText">Camera off</span>
+      </div>
+
+      <div class="stage" id="stage">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="overlay"></canvas>
+        <div class="stage-empty" id="stageEmpty">
+          <p class="empty-title">Camera preview</p>
+          <p>Press <strong>Start camera</strong> below. Your video stays in this browser tab — nothing is uploaded.</p>
+        </div>
+        <!-- Fallback face-box guide, shown only when the model is unavailable -->
+        <div class="face-guide" id="faceGuide" hidden>
+          <div class="face-box"></div>
+          <p class="face-guide-text">Face-box guide — centre your face in the frame.<br>
+          Lip tracking is unavailable (model failed to load).</p>
+        </div>
+      </div>
+
+      <p class="status-line" id="statusLine">Status: idle. Camera off · Model not loaded.</p>
+
+      <div class="controls">
+        <button id="startBtn" class="btn primary">Start camera</button>
+        <button id="stopBtn" class="btn" disabled>Stop camera</button>
+        <button id="recordBtn" class="btn danger" disabled>● Record clip</button>
+        <button id="snapshotBtn" class="btn" disabled>Snapshot</button>
+      </div>
+
+      <p class="hint">
+        Lip tracking draws the detected lip landmark points and outline on the live preview.
+        If the tracking model cannot load, a simple face-box guide is shown instead and the status line says so.
+        Recording captures short clips locally in your browser only.
+      </p>
+    </section>
+
+    <section class="card clips-card">
+      <div class="card-head">
+        <h2>Recorded clips</h2>
+        <span class="count" id="clipCount">0 clips</span>
+      </div>
+      <p class="hint">Clips are stored only in this browser session. Refreshing the page clears them.</p>
+      <ul class="clip-list" id="clipList">
+        <li class="clip-empty" id="clipEmpty">No clips yet — start the camera and record a short clip.</li>
+      </ul>
+    </section>
+
+    <section class="card limits-card">
+      <h2>What this prototype does — and does not do</h2>
+      <ul class="limits">
+        <li><span class="yes">✓</span> Captures camera video in the browser (<code>getUserMedia</code>).</li>
+        <li><span class="yes">✓</span> Visualises lip-region landmarks in real time when the MediaPipe Face Mesh model loads.</li>
+        <li><span class="yes">✓</span> Records short clips locally with <code>MediaRecorder</code> and plays them back.</li>
+        <li><span class="no">✕</span> Does <strong>not</strong> read lips or produce transcripts.</li>
+        <li><span class="no">✕</span> Does <strong>not</strong> claim any accuracy — there is no recognition model here.</li>
+        <li><span class="no">✕</span> Does <strong>not</strong> upload video anywhere; everything stays on this device.</li>
+      </ul>
+      <p class="hint">Real silent-speech transcription would need a dedicated trained lip-reading model
+      (trained on video–text pairs), which is out of scope for this prototype.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    Silent-Speech Notes · prototype for Siva · All processing is local to this browser.
+  </footer>
+
+  <!-- MediaPipe Face Mesh + drawing helpers, loaded from CDN. If these fail, the app falls back to the face-box guide. -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="app.js"></script>
+</body>
+</html>
