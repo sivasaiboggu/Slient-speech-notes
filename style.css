@@ -130,12 +130,24 @@ body {
 /* ---------- Camera stage ---------- */
 .stage {
   position: relative;
-  aspect-ratio: 4 / 3;
+  /* 16:9 matches the requested camera frame (1280×720), so the overlay canvas
+     maps landmarks onto the video exactly — a 4:3 stage cropped the video
+     sides (object-fit: cover) and shifted the lip points. */
+  aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--border);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  transition: border-color 300ms ease, box-shadow 300ms ease;
+}
+/* Live glow (Magic UI style, hand-rolled): a soft accent halo while the
+   camera runs, so the live state reads at a glance. */
+.stage.live {
+  border-color: rgba(79, 140, 255, 0.55);
+  box-shadow:
+    inset 0 0 0 1px rgba(79, 140, 255, 0.2),
+    0 0 24px rgba(79, 140, 255, 0.16);
 }
 .stage video, .stage canvas {
   position: absolute;
@@ -226,7 +238,21 @@ body {
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; position: relative; overflow: hidden; }
+/* Shine sweep on hover (Magic UI style, hand-rolled): a diagonal light pass,
+   subtle enough to feel crafted rather than flashy. */
+.btn.primary::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -60%;
+  width: 40%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+  transform: skewX(-20deg);
+  transition: left 500ms ease;
+  pointer-events: none;
+}
+.btn.primary:hover:not(:disabled)::after { left: 130%; }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.12); }
 .btn.danger.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
 

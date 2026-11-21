@@ -12,6 +12,7 @@
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
 const ctx = overlay.getContext('2d');
+const stage = document.getElementById('stage');
 const stageEmpty = document.getElementById('stageEmpty');
 const faceGuide = document.getElementById('faceGuide');
 const statusLine = document.getElementById('statusLine');
@@ -89,8 +90,12 @@ async function startCamera() {
     });
   } catch (err) {
     startBtn.disabled = false;
-    updateStatusLine();
-    statusLine.textContent = `Status: camera could not start — ${err.name || 'permission denied'}. ` +
+    // A TypeError here means the browser doesn't expose camera access at all
+    // (e.g. no mediaDevices) — say so plainly instead of printing the raw type.
+    const reason = err && err.name === 'TypeError'
+      ? 'this browser does not expose camera access'
+      : (err && err.name) || 'permission denied';
+    statusLine.textContent = `Status: camera could not start — ${reason}. ` +
       'Allow camera access in the browser and try again.';
     return;
   }
@@ -98,6 +103,7 @@ async function startCamera() {
   video.srcObject = stream;
   await video.play().catch(() => {});
   stageEmpty.style.display = 'none';
+  stage.classList.add('live');
   cameraDot.classList.add('on');
   cameraStatusText.textContent = 'Camera on';
   stopBtn.disabled = false;
@@ -120,6 +126,7 @@ function stopCamera() {
   video.srcObject = null;
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   stageEmpty.style.display = 'flex';
+  stage.classList.remove('live');
   faceGuide.hidden = true;
   cameraDot.classList.remove('on', 'rec');
   cameraStatusText.textContent = 'Camera off';
@@ -127,9 +134,12 @@ function stopCamera() {
   stopBtn.disabled = true;
   recordBtn.disabled = true;
   snapshotBtn.disabled = true;
-  setModelState(modelState === 'loaded' ? 'loaded' : modelState, ''); // keep model state, hide guide
-  if (modelState !== 'failed') setModelState(modelState);
-  updateStatusLine();
+  // If the model was still loading, it never will now — don't leave the pill
+  // stuck on "loading…". A later Start retries the load from scratch.
+  // (A loaded model stays loaded across camera restarts, so only 'loading'
+  // resets here; the FaceMesh instance is intentionally kept.)
+  if (modelState === 'loading') setModelState('not-loaded');
+  else updateStatusLine();
 }
 
 function resizeOverlay() {
@@ -188,6 +198,9 @@ async function trackLoop() {
 }
 
 function onFaceResults(results) {
+  // A result can arrive after Stop (an in-flight send resolving late) —
+  // never draw it or flip the model state back to "loaded" then.
+  if (!trackingActive || !stream) return;
   lastResultsAt = Date.now();
   if (modelState !== 'loaded') setModelState('loaded');
   resizeOverlayIfNeeded();
