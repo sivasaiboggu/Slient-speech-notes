@@ -14,7 +14,13 @@
 //   - camera denied / no camera / camera API missing -> plain-language
 //     status, no raw error names, no crash
 //   - camera switch offered only with 2+ devices, and it switches
-//   - live track stats (fps + lip aperture) update from real results
+//   - live track stats (fps + lip aperture) update from real results,
+//     and the fps number counts every result, not the ~4 Hz repaint rate
+//   - a lip point missing on the first frame does not poison smoothing
+//     (EMA NaN snap), and [hidden] really hides the face-box guide and
+//     the HUD chips (computed display, real stylesheet inlined)
+//   - switch moves to a genuinely different camera when the default is
+//     not the first enumerated device; the res chip names the camera
 //
 // Nothing here touches a real camera or claims anything about one. The live
 // camera check has to happen on a real device (see README).
@@ -49,11 +55,15 @@ async function makePage(opts = {}) {
   const faceMeshMode = opts.faceMesh || 'fake';
   const htmlRaw = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
-  // Inline the app script and strip external resources so the test needs no server.
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  // Inline the app script and the real stylesheet, and strip external
+  // resources, so the test needs no server — and so computed-style checks
+  // (e.g. [hidden] actually hiding an element) test the real CSS.
   const html = htmlRaw
     .replace(/<script[^>]*face_mesh[^>]*><\/script>/, '<!-- face_mesh cdn stripped for tests -->')
     .replace(/<link[^>]*>/g, '<!-- link stripped for tests -->')
-    .replace(/<script src="app\.js"><\/script>/, () => `<script>${appJs}</script>`);
+    .replace(/<script src="app\.js"><\/script>/, () => `<script>${appJs}</script>`)
+    .replace('</head>', () => `<style>${css}</style></head>`);
 
   const errors = [];
   const vc = new VirtualConsole();
@@ -108,6 +118,9 @@ async function makePage(opts = {}) {
         stop() { this.stopCalls += 1; },
         addEventListener(type, fn) { this.handlers[type] = fn; },
         removeEventListener() {},
+        // Which camera the browser actually opened (opts.defaultDeviceId,
+        // default cam1) — drives the switch-camera index, as on a real device.
+        getSettings() { return { deviceId: opts.defaultDeviceId || 'cam1' }; },
       });
       if (opts.gum !== 'missing') {
         window.navigator.mediaDevices = {
@@ -403,20 +416,24 @@ async function testCameraNotFound() {
 async function testSwitchCamera() {
   console.log('switch camera');
   const devices = [
-    { kind: 'videoinput', deviceId: 'cam1', label: 'Front' },
-    { kind: 'videoinput', deviceId: 'cam2', label: 'Back' },
+    { kind: 'videoinput', deviceId: 'cam1', label: 'Front camera' },
+    { kind: 'videoinput', deviceId: 'cam2', label: 'Back camera' },
   ];
-  const page = await makePage({ devices });
+  // The browser opens the second enumerated camera by default — Switch must
+  // move to a genuinely different camera, not re-select the one in use.
+  const page = await makePage({ devices, defaultDeviceId: 'cam2' });
   const { window, q, errors } = page;
   check('switch button hidden before camera starts', q('#switchBtn').hidden === true);
   q('#startBtn').click();
   await sleep(400);
   check('switch button appears with 2 cameras', q('#switchBtn').hidden === false);
+  check('res chip names the real camera in use',
+    q('#resChip').textContent.includes('Back camera'), q('#resChip').textContent);
   q('#switchBtn').click();
   await sleep(400);
   const secondCall = window.__gumCalls[1];
   check('switch requests the other camera by deviceId',
-    !!secondCall && secondCall.video && secondCall.video.deviceId && secondCall.video.deviceId.exact === 'cam2',
+    !!secondCall && secondCall.video && secondCall.video.deviceId && secondCall.video.deviceId.exact === 'cam1',
     JSON.stringify(secondCall || null));
   check('camera still on after switch', q('#cameraStatusText').textContent === 'Camera on');
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
@@ -472,6 +489,8 @@ async function testClipCap() {
     !document.querySelector('.download-btn[download="silent-speech-clip-1.webm"]'));
   check('newest clip (Clip 13) is kept',
     !!document.querySelector('.download-btn[download="silent-speech-clip-13.webm"]'));
+  check('cap notice survives in the status line (not overwritten by the refresh)',
+    q('#statusLine').textContent.includes('oldest clip removed'), q('#statusLine').textContent);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 }
@@ -489,6 +508,75 @@ async function testTrackStats() {
   check('stats show lip aperture', q('#trackStats').textContent.includes('Lip aperture'), q('#trackStats').textContent);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
+}
+
+async function testFpsRealRate() {
+  console.log('fps reflects the real frame rate');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  // Seven results in ~350 ms: the stats line repaints at ~4 Hz, but the fps
+  // number must count every result. (Sampling inside the throttled repaint
+  // used to cap the readout at ~4 fps however fast tracking ran.)
+  for (let i = 0; i < 6; i += 1) window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(300);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(300);
+  const m = q('#trackStats').textContent.match(/(\d+) fps/);
+  const fps = m ? parseInt(m[1], 10) : 0;
+  check('fps counts every result, not the repaint rate (>= 5)', fps >= 5, q('#trackStats').textContent);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testSmoothingNanRecovery() {
+  console.log('EMA recovers from a null point on the first frame');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  const before = drawCallCount(page);
+  const sparse = LANDMARKS();
+  sparse[61] = null; // outer lip corner missing on the first frame
+  window.__faceMeshCb({ multiFaceLandmarks: [sparse] });
+  await sleep(150);
+  // One frame: 39 lip-point arcs + 19 outer + 20 inner polyline calls = 78.
+  const firstFrameDraws = drawCallCount(page) - before;
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(150);
+  // Full frame: 40 arcs + 20 + 20 = 80. Without the NaN snap the missing
+  // point would stay NaN forever and this frame would draw 78 again.
+  const secondFrameDraws = drawCallCount(page) - before - firstFrameDraws;
+  check('first frame draws 39 lip points (one missing)', firstFrameDraws === 78, `draws: ${firstFrameDraws}`);
+  check('second frame draws all 40 lip points again (no NaN poisoning)', secondFrameDraws === 80, `draws: ${secondFrameDraws}`);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testHiddenAttributeHonoured() {
+  console.log('[hidden] actually hides elements');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  const display = (sel) => window.getComputedStyle(q(sel)).display;
+  check('face-box guide is display:none on load', display('#faceGuide') === 'none', display('#faceGuide'));
+  check('res chip is display:none on load', display('#resChip') === 'none', display('#resChip'));
+  check('REC chip is display:none on load', display('#recHud') === 'none', display('#recHud'));
+  check('switch button is display:none on load', display('#switchBtn') === 'none', display('#switchBtn'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+
+  // And the reverse: with the camera on and the model failed, the guide and
+  // the res chip must actually show.
+  const failed = await makePage({ faceMesh: 'missing' });
+  failed.q('#startBtn').click();
+  await sleep(300);
+  const fdisplay = (sel) => failed.window.getComputedStyle(failed.q(sel)).display;
+  check('face-box guide shows once camera is on and model failed', fdisplay('#faceGuide') !== 'none', fdisplay('#faceGuide'));
+  check('res chip shows once camera is on', fdisplay('#resChip') !== 'none', fdisplay('#resChip'));
+  check('REC chip stays hidden while not recording', fdisplay('#recHud') === 'none', fdisplay('#recHud'));
+  check('no JS errors (fallback)', failed.errors.length === 0, JSON.stringify(failed.errors));
+  failed.window.close();
 }
 
 async function testNoCameraApi() {
@@ -530,6 +618,9 @@ async function main() {
   await testClipNumbering();
   await testClipCap();
   await testTrackStats();
+  await testFpsRealRate();
+  await testSmoothingNanRecovery();
+  await testHiddenAttributeHonoured();
   await testNoCameraApi();
   testStaticCss();
   console.log(`\n${passed} passed, ${failed} failed`);

@@ -29,9 +29,13 @@ lip-region landmark tracking, and records short clips locally in the browser.
   can be downloaded or deleted. Clips live only in the browser session; refreshing clears them.
   Each recording owns its chunks in a closure, so stopping one clip and
   starting the next immediately cannot mix them up, and the list caps at the
-  latest 12 clips (oldest drops off) to bound session memory. Clip numbers
-  never repeat after a delete. A REC timer and the camera resolution show on
-  the stage while recording/live.
+  latest 12 clips (oldest drops off) to bound session memory — and the status
+  line says so when it happens, instead of the notice being overwritten by the
+  status refresh. Clip numbers
+  never repeat after a delete. A REC timer and the camera resolution (plus the camera's name, once known) show on
+  the stage while recording/live. The fps readout counts every tracking result,
+  so it is the real frame rate, not the ~4 Hz repaint rate; a face leaving the
+  frame updates the readout at once instead of waiting out the throttle.
 - **Snapshot** — saves a still PNG of the current camera frame, **including
   the lip-tracking overlay** when tracking is live, and confirms with a short
   status message.
@@ -42,7 +46,12 @@ lip-region landmark tracking, and records short clips locally in the browser.
   in plain language instead of freezing. The Face Mesh model gets up to 30
   seconds to return its first result (slow mobile connections), and a single
   model instance is reused across camera restarts. Malformed tracking results
-  are skipped, never drawn from.
+  are skipped, never drawn from. A lip point missing on the first frame cannot
+  poison smoothing (a non-finite smoothed point snaps to the new reading).
+  Hidden HUD elements stay hidden — the `[hidden]` attribute beats the CSS
+  display rules, so the face-box guide, resolution chip and REC chip never
+  show while they should not. Camera switching re-syncs against the real
+  device list, so Switch always moves to a different camera.
 
 ## What it does NOT do (important)
 
@@ -110,17 +119,33 @@ no real camera is involved, and they prove nothing about a real device:
 
 ```bash
 npm install   # jsdom only, dev dependency
-npm test      # 84 checks, all green
+npm test      # 100 checks, all green
 ```
 
 Covered: initial render and honest note, CDN-failure fallback, lip-draw path
 with smoothing, no-face and malformed results, stop-while-loading pill reset,
 FaceMesh reuse, late-result race, recording / download / transcribe / delete,
-monotonic clip numbering after a delete, 12-clip cap, live track stats
-(fps + lip aperture), camera switch (2 cameras offered, 1 camera hidden),
+monotonic clip numbering after a delete, 12-clip cap (and the cap notice
+surviving in the status line), live track stats
+(fps + lip aperture — fps counts every result, not the repaint rate),
+EMA recovery when a lip point is missing on the first frame,
+`[hidden]` really hiding the face-box guide and HUD chips (computed display
+against the real stylesheet), camera switch (2 cameras offered, 1 camera hidden;
+switch moves to a genuinely different camera when the default is not the first
+enumerated device; res chip names the camera in use),
 snapshot with overlay, unexpected camera-track end, camera denied / no
 camera / no camera API (all plain-language), and no camera API at all.
 The live-camera check still has to happen on a real device (see above).
+
+Round 7 also verified the UI in a real headless Chrome (stock build, served
+over localhost, MediaPipe files served locally because the VM's egress proxy
+is unreachable from Chrome): with Chrome's fake camera the model loads
+("Model: loaded ✓", "Lip tracking active"), the loop runs ("Tracking · no
+face in frame" — the fake feed has no face), and a 6-second recording
+produces a clip. A 2.5-second recording produced no data in headless — the
+encoder's first chunk takes a few seconds to arrive there, not an app bug;
+the app reports it honestly ("recording produced no data — clip discarded").
+A real face on a real camera is still untested — that check is Siva's.
 
 ## Files
 

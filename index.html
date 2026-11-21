@@ -72,7 +72,7 @@
           <span id="cameraStatusText">Camera off</span>
         </div>
 
-        <div class="stage" id="stage">
+        <div class="stage" id="stage" role="region" aria-label="Camera preview">
           <video id="video" autoplay muted playsinline></video>
           <canvas id="overlay"></canvas>
           <span class="hud hud-live" id="liveChip" aria-hidden="true"><span class="hud-dot"></span>LIVE</span>
@@ -116,7 +116,13 @@
         </div>
         <p class="hint">Clips are stored only in this browser session — refreshing the page clears them. The list keeps the latest 12.</p>
         <ul class="clip-list" id="clipList">
-          <li class="clip-empty" id="clipEmpty">No clips yet — start the camera and record a short clip.</li>
+          <li class="clip-empty" id="clipEmpty">
+            <span class="clip-empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="14" rx="3"/><path d="M16 10.5l6-3.5v10l-6-3.5"/></svg>
+            </span>
+            <strong>No clips yet</strong>
+            <span>Start the camera and record a short clip — it stays on this device.</span>
+          </li>
         </ul>
       </section>
 

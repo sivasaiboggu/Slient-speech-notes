@@ -9,7 +9,12 @@
  * - One overlay-sizing path: the canvas backing always matches the video
  *   frame, so landmarks map 1:1. No CSS-size/DPR sizing anywhere.
  * - Lip points are temporally smoothed (EMA) — raw per-frame landmarks
- *   jitter visibly; smoothing is what makes the overlay look tracked.
+ *   jitter visibly; smoothing is what makes the overlay look tracked. A
+ *   point missing on the first frame seeds NaN, so a non-finite stored
+ *   point snaps to the new one instead of staying NaN forever.
+ * - The fps readout samples every tracking result; the stats line only
+ *   repaints at ~4 Hz, so the number is the real frame rate, not the
+ *   repaint rate. A face leaving the frame updates the line at once.
  * - Recording is session-scoped: each recording owns its chunks, mime
  *   type and start time in a closure, so stopping one clip and starting
  *   the next immediately cannot mix the two up.
@@ -17,6 +22,11 @@
  *   goes to the console, never to the user.
  * - The model watchdog never fires while the tab is hidden (rAF is
  *   paused there, so "no results yet" says nothing about the model).
+ * - The camera-switch index is re-synced once enumerateDevices returns
+ *   the real list, so Switch always moves to a different camera.
+ * - Hidden HUD elements stay hidden: [hidden] beats the display rules
+ *   in CSS (see style.css), so the face-box guide, res chip and REC chip
+ *   never show while they should not.
  */
 
 'use strict';
@@ -177,10 +187,7 @@ async function startCamera(deviceId) {
   stopBtn.disabled = false;
   recordBtn.disabled = false;
   snapshotBtn.disabled = false;
-  if (resChip) {
-    resChip.hidden = false;
-    resChip.textContent = `${video.videoWidth || '?'}×${video.videoHeight || '?'}`;
-  }
+  updateResChip();
   syncOverlaySize();
 
   initFaceMesh();
@@ -212,7 +219,7 @@ function stopCamera() {
   stopBtn.disabled = true;
   recordBtn.disabled = true;
   snapshotBtn.disabled = true;
-  if (resChip) resChip.hidden = true;
+  updateResChip();
   if (recHud) recHud.hidden = true;
   if (trackStats) trackStats.textContent = '';
   smoothedLips = null;
@@ -247,6 +254,12 @@ async function refreshCameraList() {
     return;
   }
   if (switchBtn) switchBtn.hidden = videoDevices.length < 2;
+  // The device list only exists after permission, so the index picked at
+  // Start time was a guess against an empty list. Re-sync now that the real
+  // devices (and the real current deviceId from the track) are known — or
+  // Switch can re-select the camera already in use.
+  syncCurrentDeviceIndex();
+  updateResChip();
 }
 
 async function switchCamera() {
@@ -299,6 +312,23 @@ function syncOverlaySize() {
   lastOverlayKey = key;
   overlay.width = w;
   overlay.height = h;
+}
+
+// Resolution + camera label chip. The label comes from enumerateDevices,
+// which only carries real labels after permission — until then it is
+// resolution only, never a guessed name.
+function currentDeviceLabel() {
+  if (!currentDeviceId) return '';
+  const d = videoDevices.find((dev) => dev.deviceId === currentDeviceId);
+  return d && d.label ? d.label : '';
+}
+function updateResChip() {
+  if (!resChip) return;
+  if (!stream) { resChip.hidden = true; return; }
+  const res = `${video.videoWidth || '?'}×${video.videoHeight || '?'}`;
+  const label = currentDeviceLabel();
+  resChip.textContent = label ? `${res} · ${label}` : res;
+  resChip.hidden = false;
 }
 
 // ---------- Face Mesh lip tracking ----------
@@ -373,6 +403,12 @@ function onFaceResults(results) {
   // never draw it or flip the model state back to "loaded" then.
   if (!trackingActive || !stream) return;
   lastResultsAt = Date.now();
+  // Sample every result for the fps readout, before any throttling: the
+  // stats line only repaints at ~4 Hz, but the samples are per-frame, so the
+  // fps number is the real frame rate. (Sampling inside the throttled stats
+  // update capped the readout at ~4 fps no matter how fast tracking ran.)
+  resultTimes.push(lastResultsAt);
+  resultTimes = resultTimes.filter((t) => lastResultsAt - t < 1000);
   if (modelState !== 'loaded') setModelState('loaded');
   syncOverlaySize();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
@@ -409,6 +445,14 @@ function smoothLipPoints(landmarks) {
   LIP_INDICES.forEach((li, k) => {
     const pt = landmarks[li];
     if (!pt) return;
+    // A point missing on the first frame seeds NaN, and EMA around NaN stays
+    // NaN forever — that lip point would never draw again. Snap a non-finite
+    // stored point straight to the new one instead.
+    if (!Number.isFinite(smoothedLips[k][0]) || !Number.isFinite(smoothedLips[k][1])) {
+      smoothedLips[k][0] = pt.x;
+      smoothedLips[k][1] = pt.y;
+      return;
+    }
     smoothedLips[k][0] += SMOOTH_ALPHA * (pt.x - smoothedLips[k][0]);
     smoothedLips[k][1] += SMOOTH_ALPHA * (pt.y - smoothedLips[k][1]);
   });
@@ -454,14 +498,15 @@ function drawLips(landmarks) {
 function updateTrackStats(landmarks) {
   if (!trackStats) return;
   const now = Date.now();
-  if (now - lastStatsAt < 250) return; // throttle DOM writes to ~4 Hz
-  lastStatsAt = now;
   if (!landmarks) {
+    // A face leaving the frame is a state change, not a repaint — show it at
+    // once instead of waiting out the throttle below.
+    lastStatsAt = now;
     trackStats.textContent = 'Tracking · no face in frame';
     return;
   }
-  resultTimes.push(now);
-  resultTimes = resultTimes.filter((t) => now - t < 1000);
+  if (now - lastStatsAt < 250) return; // throttle DOM writes to ~4 Hz
+  lastStatsAt = now;
   const fps = resultTimes.length;
   // Smoothed points: outer 0–19, inner 20–39. Inner upper lip is index 13
   // (inner slot 5), inner lower lip is index 14 (inner slot 15); outer
@@ -540,7 +585,7 @@ function startRecording() {
 }
 
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  const recorder = mediaRecorder;
   recording = false;
   recordBtn.textContent = '● Record clip';
   recordBtn.classList.remove('recording');
@@ -549,6 +594,10 @@ function stopRecording() {
   if (recHud) recHud.hidden = true;
   stopRecordTimer();
   updateStatusLine();
+  // Stop last: onstop fires after this (async in browsers, synchronous in
+  // some test fakes) and writes its own status — clip saved, cap notice, or
+  // "no data" — which must be the message that sticks, not the refresh above.
+  if (recorder && recorder.state !== 'inactive') recorder.stop();
 }
 
 function onRecordingStopped(chunks, mimeType, startedAt) {
@@ -558,8 +607,14 @@ function onRecordingStopped(chunks, mimeType, startedAt) {
     statusLine.textContent = 'Status: recording produced no data — clip discarded.';
     return;
   }
-  addClip(URL.createObjectURL(blob), durationSec, blob.size);
-  updateStatusLine();
+  const pruned = addClip(URL.createObjectURL(blob), durationSec, blob.size);
+  if (pruned > 0 && stream) {
+    // The cap notice used to be written by pruneClips and then immediately
+    // overwritten by the status refresh — say it here, where it sticks.
+    statusLine.textContent = `Status: clip saved — oldest clip removed to keep the latest ${MAX_CLIPS}.`;
+  } else {
+    updateStatusLine();
+  }
 }
 
 function addClip(url, durationSec, sizeBytes) {
@@ -602,24 +657,28 @@ function addClip(url, durationSec, sizeBytes) {
   });
 
   clipList.prepend(li);
-  pruneClips();
+  return pruneClips();
 }
 
 // Clips live in memory as object URLs, so the list is capped — past the cap
 // the oldest clip is dropped (and its URL revoked) instead of growing the
-// session without bound.
+// session without bound. Returns how many were dropped, so the caller can
+// say so in the status line (pruneClips itself must not write there — its
+// message would be overwritten by the caller's status refresh).
 function pruneClips() {
   const clips = clipList.querySelectorAll('.clip');
-  if (clips.length <= MAX_CLIPS) return;
+  if (clips.length <= MAX_CLIPS) return 0;
+  let removed = 0;
   for (let i = clips.length - 1; i >= MAX_CLIPS; i -= 1) {
     const old = clips[i];
     const v = old.querySelector('video');
     if (v && v.src) URL.revokeObjectURL(v.src);
     old.remove();
     clipTotal -= 1;
+    removed += 1;
   }
   clipCount.textContent = `${clipTotal} clip${clipTotal === 1 ? '' : 's'}`;
-  statusLine.textContent = `Status: oldest clip removed — keeping the latest ${MAX_CLIPS} clips in this session.`;
+  return removed;
 }
 
 // ---------- Snapshot ----------
@@ -648,7 +707,7 @@ stopBtn.addEventListener('click', stopCamera);
 recordBtn.addEventListener('click', () => (recording ? stopRecording() : startRecording()));
 snapshotBtn.addEventListener('click', takeSnapshot);
 if (switchBtn) switchBtn.addEventListener('click', switchCamera);
-video.addEventListener('loadedmetadata', syncOverlaySize);
+video.addEventListener('loadedmetadata', () => { syncOverlaySize(); updateResChip(); });
 // The model watchdog must not fire while the tab is hidden (rAF is paused
 // there, so "no results yet" says nothing about the model); re-arm it when
 // the tab comes back.
