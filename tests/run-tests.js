@@ -19,8 +19,14 @@
 //   - a lip point missing on the first frame does not poison smoothing
 //     (EMA NaN snap), and [hidden] really hides the face-box guide and
 //     the HUD chips (computed display, real stylesheet inlined)
-//   - switch moves to a genuinely different camera when the default is
-//     not the first enumerated device; the res chip names the camera
+//   - switch clears the old camera's lip points (fresh seed after switch),
+//     and Switch works after Stop (starts the next camera)
+//   - hero copy says 40 lip landmarks, the number actually drawn
+//   - unknown camera errors get a neutral message (never "permission was
+//     denied"), NotFoundError gets no "allow camera access" advice, and a
+//     failed switch keeps the specific reason
+//   - the 12-clip cap notice survives Stop camera
+//   - dark/light theme toggle (stored choice wins, OS preference otherwise)
 //
 // Nothing here touches a real camera or claims anything about one. The live
 // camera check has to happen on a real device (see README).
@@ -109,6 +115,18 @@ async function makePage(opts = {}) {
       window.__recorders = [];
       window.__gumCalls = [];
       window.__sendNever = !!opts.sendNever;
+      window.__gumErrorOnCall = opts.gumErrorOnCall || null;
+      // The <head> theme script reads matchMedia + localStorage before any
+      // other script runs; seed both so theme tests are deterministic.
+      window.matchMedia = (q) => ({
+        matches: !!opts.matchMediaLight && String(q).includes('light'),
+        media: q,
+        addEventListener() {},
+        removeEventListener() {},
+      });
+      if (opts.storedTheme) {
+        try { window.localStorage.setItem('ssn-theme', opts.storedTheme); } catch (e) { /* ignore */ }
+      }
 
       // Fake camera stream + track.
       const makeTrack = () => ({
@@ -126,6 +144,12 @@ async function makePage(opts = {}) {
         window.navigator.mediaDevices = {
           getUserMedia: async (constraints) => {
             window.__gumCalls.push(constraints);
+            const failName = window.__gumErrorOnCall && window.__gumErrorOnCall[window.__gumCalls.length];
+            if (failName) {
+              const fail = new Error('simulated ' + failName);
+              fail.name = failName;
+              throw fail;
+            }
             if (opts.gum === 'denied') {
               const err = new Error('Permission denied');
               err.name = 'NotAllowedError';
@@ -134,6 +158,11 @@ async function makePage(opts = {}) {
             if (opts.gum === 'notfound') {
               const err = new Error('Requested device not found');
               err.name = 'NotFoundError';
+              throw err;
+            }
+            if (opts.gum === 'unknown') {
+              const err = new Error('Something broke');
+              err.name = 'WeirdError';
               throw err;
             }
             const track = makeTrack();
@@ -408,9 +437,176 @@ async function testCameraNotFound() {
   check('status says plainly that no camera was found',
     q('#statusLine').textContent.includes('no camera was found') &&
     !q('#statusLine').textContent.includes('NotFoundError'));
+  check('missing-camera advice is not "allow camera access"',
+    !q('#statusLine').textContent.includes('Allow camera access'));
   check('Start re-enabled', !q('#startBtn').disabled);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
+}
+
+async function testUnknownCameraError() {
+  console.log('unknown camera error name');
+  const page = await makePage({ gum: 'unknown' });
+  const { q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  check('unknown error gets a neutral message, not a permission blame',
+    q('#statusLine').textContent.includes('could not be started') &&
+    !q('#statusLine').textContent.includes('permission was denied'),
+    q('#statusLine').textContent);
+  check('no raw error name leaks to the user',
+    !q('#statusLine').textContent.includes('WeirdError'));
+  check('Start re-enabled', !q('#startBtn').disabled);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testSwitchClearsStaleLipPoints() {
+  console.log('switch clears stale lip points');
+  const devices = [
+    { kind: 'videoinput', deviceId: 'cam1', label: 'Front camera' },
+    { kind: 'videoinput', deviceId: 'cam2', label: 'Back camera' },
+  ];
+  const page = await makePage({ devices, defaultDeviceId: 'cam2' });
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(400);
+  window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
+  await sleep(200);
+  const clearRects = () => overlayCalls(page).filter((c) => c.method === 'clearRect').length;
+  const clearsBefore = clearRects();
+  const drawsBefore = drawCallCount(page);
+  q('#switchBtn').click();
+  await sleep(400);
+  check('switch wipes the overlay canvas before the new camera draws',
+    clearRects() > clearsBefore, `clearRect ${clearsBefore} -> ${clearRects()}`);
+  // Feed a frame with one lip point missing. A fresh seed draws 39 lip
+  // points (78 draw calls); stale smoothed points carried over from the old
+  // camera would keep the missing point alive and draw all 40 (80 calls).
+  const sparse = LANDMARKS();
+  sparse[61] = null;
+  window.__faceMeshCb({ multiFaceLandmarks: [sparse] });
+  await sleep(200);
+  const frameDraws = drawCallCount(page) - drawsBefore;
+  check('first frame after switch seeds fresh lip points (39, not 40)',
+    frameDraws === 78, `draws: ${frameDraws}`);
+  check('camera still on after switch', q('#cameraStatusText').textContent === 'Camera on');
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testSwitchAfterStop() {
+  console.log('switch camera after stop');
+  const devices = [
+    { kind: 'videoinput', deviceId: 'cam1', label: 'Front camera' },
+    { kind: 'videoinput', deviceId: 'cam2', label: 'Back camera' },
+  ];
+  const page = await makePage({ devices, defaultDeviceId: 'cam2' });
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(400);
+  q('#stopBtn').click();
+  await sleep(200);
+  check('camera off after stop', q('#cameraStatusText').textContent === 'Camera off');
+  check('switch button stays visible after stop', q('#switchBtn').hidden === false);
+  q('#switchBtn').click();
+  await sleep(400);
+  const secondCall = window.__gumCalls[1];
+  check('switch after stop starts the other camera',
+    !!secondCall && secondCall.video && secondCall.video.deviceId && secondCall.video.deviceId.exact === 'cam1',
+    JSON.stringify(secondCall || null));
+  check('camera on again after switch-after-stop', q('#cameraStatusText').textContent === 'Camera on');
+  check('Start disabled while the switched camera runs', q('#startBtn').disabled === true);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testSwitchFailureKeepsReason() {
+  console.log('failed switch keeps the specific reason');
+  const devices = [
+    { kind: 'videoinput', deviceId: 'cam1', label: 'Front camera' },
+    { kind: 'videoinput', deviceId: 'cam2', label: 'Back camera' },
+  ];
+  // The second camera is gone by the time Switch asks for it.
+  const page = await makePage({ devices, defaultDeviceId: 'cam2', gumErrorOnCall: { 2: 'NotFoundError' } });
+  const { q, errors } = page;
+  q('#startBtn').click();
+  await sleep(400);
+  q('#switchBtn').click();
+  await sleep(400);
+  check('failed switch says it could not switch',
+    q('#statusLine').textContent.includes('could not switch camera'));
+  check('failed switch keeps the real reason (no camera was found)',
+    q('#statusLine').textContent.includes('no camera was found'), q('#statusLine').textContent);
+  check('old "previous camera is off" wording is gone',
+    !q('#statusLine').textContent.includes('previous camera is off'));
+  check('camera off after failed switch', q('#cameraStatusText').textContent === 'Camera off');
+  check('Start re-enabled after failed switch', !q('#startBtn').disabled);
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testFortyLandmarksCopy() {
+  console.log('40 lip landmarks, not 468');
+  const page = await makePage();
+  const { q, errors } = page;
+  check('hero says 40 lip landmarks and never 468',
+    q('.hero-sub').textContent.includes('40 lip landmarks') &&
+    !q('.hero-sub').textContent.includes('468'), q('.hero-sub').textContent);
+  check('hero stat is 40', q('.hero-stats dt').textContent === '40', q('.hero-stats dt').textContent);
+  check('hero stat label says lip landmarks drawn',
+    q('.hero-stats dd').textContent.includes('lip landmarks drawn'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testCapNoticeSurvivesStop() {
+  console.log('clip-cap notice survives Stop camera');
+  const page = await makePage();
+  const { q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+  for (let i = 0; i < 13; i += 1) await recordOne(page);
+  check('cap notice shows after the 13th clip',
+    q('#statusLine').textContent.includes('oldest clip removed'), q('#statusLine').textContent);
+  q('#stopBtn').click();
+  await sleep(200);
+  check('cap notice still there after Stop camera',
+    /oldest clip removed/i.test(q('#statusLine').textContent), q('#statusLine').textContent);
+  check('camera really is off', q('#cameraStatusText').textContent === 'Camera off');
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+}
+
+async function testThemeToggle() {
+  console.log('dark/light theme toggle');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  check('default theme is dark (no stored choice, OS prefers dark)',
+    window.document.documentElement.getAttribute('data-theme') === 'dark');
+  check('toggle button offers Light mode', q('#themeBtn').textContent === 'Light mode');
+  q('#themeBtn').click();
+  await sleep(100);
+  check('toggle switches to light', window.document.documentElement.getAttribute('data-theme') === 'light');
+  check('choice is stored', window.localStorage.getItem('ssn-theme') === 'light');
+  check('toggle button now offers Dark mode', q('#themeBtn').textContent === 'Dark mode');
+  q('#themeBtn').click();
+  await sleep(100);
+  check('toggle switches back to dark', window.document.documentElement.getAttribute('data-theme') === 'dark');
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  page.window.close();
+
+  // OS prefers light: the page starts light without any stored choice.
+  const osLight = await makePage({ matchMediaLight: true });
+  check('OS light preference starts the page light',
+    osLight.window.document.documentElement.getAttribute('data-theme') === 'light');
+  osLight.window.close();
+
+  // A stored choice beats the OS preference.
+  const stored = await makePage({ storedTheme: 'light', matchMediaLight: false });
+  check('stored light choice beats an OS dark preference',
+    stored.window.document.documentElement.getAttribute('data-theme') === 'light');
+  stored.window.close();
 }
 
 async function testSwitchCamera() {
@@ -614,14 +810,21 @@ async function main() {
   await testTrackEnded();
   await testCameraDenied();
   await testCameraNotFound();
+  await testUnknownCameraError();
   await testSwitchCamera();
+  await testSwitchClearsStaleLipPoints();
+  await testSwitchAfterStop();
+  await testSwitchFailureKeepsReason();
+  await testFortyLandmarksCopy();
   await testClipNumbering();
   await testClipCap();
+  await testCapNoticeSurvivesStop();
   await testTrackStats();
   await testFpsRealRate();
   await testSmoothingNanRecovery();
   await testHiddenAttributeHonoured();
   await testNoCameraApi();
+  await testThemeToggle();
   testStaticCss();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

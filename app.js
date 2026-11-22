@@ -27,6 +27,11 @@
  * - Hidden HUD elements stay hidden: [hidden] beats the display rules
  *   in CSS (see style.css), so the face-box guide, res chip and REC chip
  *   never show while they should not.
+ * - Round 10 (22 Nov 2026): Switch camera clears the old camera's lip
+ *   points and works after Stop; unknown camera errors no longer blame
+ *   permission; the clip-cap notice survives Stop (kept in clipCapNotice
+ *   and re-shown by updateStatusLine); hero copy says 40 lip landmarks,
+ *   the number actually drawn.
  */
 
 'use strict';
@@ -54,6 +59,7 @@ const recTimer = document.getElementById('recTimer');
 const clipList = document.getElementById('clipList');
 const clipEmpty = document.getElementById('clipEmpty');
 const clipCount = document.getElementById('clipCount');
+const themeBtn = document.getElementById('themeBtn');
 
 // ---------- State ----------
 let stream = null;
@@ -75,6 +81,8 @@ let videoDevices = [];
 let smoothedLips = null; // EMA-smoothed lip points, normalised coords
 let resultTimes = [];    // timestamps of recent results, for the fps readout
 let lastStatsAt = 0;
+let lastCameraError = ''; // plain-language reason from the last failed camera start
+let clipCapNotice = '';   // cap sentence that must survive later status refreshes
 
 const MAX_CLIPS = 12;    // bound session memory: oldest clip drops off past this
 const SMOOTH_ALPHA = 0.5; // EMA factor for lip points (0.5 = steady, still responsive)
@@ -112,7 +120,11 @@ function updateStatusLine() {
   const rec = recording ? ' · ● Recording' : '';
   statusLine.innerHTML = `Status: ${cam} · ${model}${rec}.` +
     (modelState === 'failed' && modelFailedReason
-      ? ` <span class="warn-text">(${escapeHtml(modelFailedReason)})</span>` : '');
+      ? ` <span class="warn-text">(${escapeHtml(modelFailedReason)})</span>` : '') +
+    // The clip-cap notice is a session fact, not a camera fact: once a clip
+    // was dropped to hold the cap, later refreshes (e.g. Stop camera) must
+    // not silently erase it. It clears when the next recording resolves.
+    (clipCapNotice ? ` ${clipCapNotice}` : '');
 }
 
 function escapeHtml(s) {
@@ -131,7 +143,7 @@ function describeCameraError(err) {
     OverconstrainedError: 'no camera matches the requested settings',
     AbortError: 'the camera request was interrupted',
     TypeError: 'this browser does not expose camera access',
-  }[name] || 'permission was denied';
+  }[name] || 'the camera could not be started'; // never blame permission for an unknown error
   if (err) console.warn('[silent-speech] camera error:', err);
   return plain;
 }
@@ -153,8 +165,16 @@ async function startCamera(deviceId) {
     stream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (err) {
     startBtn.disabled = false;
-    statusLine.textContent = `Status: camera could not start — ${describeCameraError(err)}. ` +
-      'Allow camera access in the browser and try again.';
+    lastCameraError = describeCameraError(err);
+    // The advice must match the cause: telling the user to allow camera
+    // access when no camera exists (or the requested camera is gone) sends
+    // them to fix the wrong thing.
+    const advice = (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError'))
+      ? 'Allow camera access in the browser and try again.'
+      : (err && err.name === 'NotFoundError')
+        ? 'Check that a camera is connected and try again.'
+        : 'Try again.';
+    statusLine.textContent = `Status: camera could not start — ${lastCameraError}. ${advice}`;
     return false;
   }
 
@@ -169,9 +189,11 @@ async function startCamera(deviceId) {
     stream = null;
     video.srcObject = null;
     startBtn.disabled = false;
+    lastCameraError = 'the preview could not play';
     statusLine.textContent = 'Status: camera started but the preview could not play — try again.';
     return false;
   }
+  lastCameraError = ''; // a clean start clears the last failure's reason
   // If the camera disappears mid-session (unplugged, permission revoked,
   // another app takes it), the track fires 'ended' — stop cleanly and say so.
   const videoTrack = stream.getVideoTracks()[0];
@@ -263,15 +285,25 @@ async function refreshCameraList() {
 }
 
 async function switchCamera() {
-  if (videoDevices.length < 2 || !stream) return;
+  if (videoDevices.length < 2) return;
   const next = videoDevices[(currentDeviceIndex + 1) % videoDevices.length];
   if (recording) stopRecording();
-  stopTracksOnly();
+  if (stream) stopTracksOnly();
+  // The old camera's lip points must not linger on the new camera's first
+  // frames: drop the smoothed points and wipe the overlay now, before the
+  // new camera's first result arrives.
+  smoothedLips = null;
+  resultTimes = [];
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
   const ok = await startCamera(next.deviceId);
   if (!ok) {
-    // startCamera already restored the Start button; tidy the rest of the UI.
+    // startCamera already wrote the specific reason to the status line; keep
+    // it. A generic "could not switch" would hide whether the camera is
+    // missing, denied, or in use — and Switch works after Stop too, so the
+    // "previous camera is off" wording no longer fits every failure.
+    const reason = lastCameraError || 'the camera could not be started';
     stopCamera();
-    statusLine.textContent = 'Status: could not switch camera — the previous camera is off. ' +
+    statusLine.textContent = `Status: could not switch camera — ${reason}. ` +
       'Press Start camera to try again.';
   }
 }
@@ -553,6 +585,7 @@ function stopRecordTimer() {
 
 function startRecording() {
   if (!stream || recording) return;
+  clipCapNotice = ''; // a new recording supersedes the old cap notice
   if (!window.MediaRecorder) {
     statusLine.textContent = 'Status: MediaRecorder is not supported in this browser — recording unavailable.';
     return;
@@ -608,11 +641,16 @@ function onRecordingStopped(chunks, mimeType, startedAt) {
     return;
   }
   const pruned = addClip(URL.createObjectURL(blob), durationSec, blob.size);
-  if (pruned > 0 && stream) {
-    // The cap notice used to be written by pruneClips and then immediately
-    // overwritten by the status refresh — say it here, where it sticks.
+  if (pruned > 0) {
+    // The cap notice is about the clip list, not the camera: it must show
+    // even when the camera is already off (recording stopped by Stop camera,
+    // whose onstop fires after the tracks are gone), and it must survive
+    // later status refreshes — so it is kept in clipCapNotice and re-shown
+    // by updateStatusLine until the next recording resolves.
+    clipCapNotice = `Oldest clip removed to keep the latest ${MAX_CLIPS}.`;
     statusLine.textContent = `Status: clip saved — oldest clip removed to keep the latest ${MAX_CLIPS}.`;
   } else {
+    clipCapNotice = '';
     updateStatusLine();
   }
 }
@@ -699,6 +737,22 @@ function takeSnapshot() {
   // Confirm briefly, then restore the normal status line.
   statusLine.textContent = 'Status: snapshot saved — check your downloads folder.';
   setTimeout(updateStatusLine, 3000);
+}
+
+// ---------- Theme ----------
+// The <head> script already applied the stored/OS theme before first paint;
+// this only wires the toggle and keeps its label in sync. localStorage is
+// guarded: private mode must not break the page.
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('ssn-theme', theme); } catch (e) { /* private mode */ }
+  if (themeBtn) themeBtn.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
+}
+if (themeBtn) {
+  themeBtn.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? 'Dark mode' : 'Light mode';
+  themeBtn.addEventListener('click', () => {
+    setTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+  });
 }
 
 // ---------- Wiring ----------

@@ -5,25 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="Silent-Speech Notes prototype — live camera preview with lip-region landmark tracking in the browser. No lip-reading transcription; nothing is uploaded.">
 <meta name="theme-color" content="#07080c">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c5cff'/%3E%3Cstop offset='1' stop-color='%2338e1ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='url(%23g)' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='url(%23g)'/%3E%3C/svg%3E">
+<script>
+  // Theme before first paint: stored choice wins, otherwise the OS preference.
+  try {
+    var ssnTheme = localStorage.getItem('ssn-theme');
+    if (ssnTheme !== 'dark' && ssnTheme !== 'light') {
+      ssnTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', ssnTheme);
+  } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 16 C9 10.5 13 10.5 16 13.5 C19 10.5 23 10.5 27 16 C23 21.5 19 21.5 16 18.5 C13 21.5 9 21.5 5 16 Z' fill='none' stroke='%234f8cff' stroke-width='2.2' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>Silent-Speech Notes — Prototype</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="aurora" aria-hidden="true"></div>
-
   <header class="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="30" height="30" fill="none">
-          <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#38e1ff"/>
-          </linearGradient></defs>
-          <circle cx="16" cy="16" r="13" stroke="url(#lg)" stroke-width="2.5"/>
-          <circle cx="16" cy="16" r="4.5" fill="url(#lg)"/>
+        <svg viewBox="0 0 32 32" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round">
+          <path d="M5 16 C9 10.5 13 10.5 16 13.5 C19 10.5 23 10.5 27 16 C23 21.5 19 21.5 16 18.5 C13 21.5 9 21.5 5 16 Z"/>
         </svg>
       </span>
       <div>
@@ -31,7 +35,10 @@
         <p class="subtitle">Camera + lip-region tracking prototype</p>
       </div>
     </div>
-    <span class="pill" id="modelPill">Model: not loaded</span>
+    <div class="topbar-actions">
+      <button class="btn theme-btn" id="themeBtn" type="button">Light mode</button>
+      <span class="pill" id="modelPill">Model: not loaded</span>
+    </div>
   </header>
 
   <!-- Honest note — always visible -->
@@ -43,8 +50,8 @@
   <main class="page">
     <section class="hero">
       <p class="eyebrow"><span class="eyebrow-dot"></span>Prototype · 100% on-device · Nothing uploaded</p>
-      <h2 class="hero-title">Mouth the words.<br>Watch your <span class="grad">lips</span> move.</h2>
-      <p class="hero-sub">Point your camera at your face and watch 468 lip landmarks track you
+      <h2 class="hero-title">Mouth the words.<br>Watch your <span class="accent-word">lips</span> move.</h2>
+      <p class="hero-sub">Point your camera at your face and watch 40 lip landmarks track you
       live in the browser. Your video never leaves this tab — and this prototype
       does not transcribe, because real lip-reading needs a trained model it does not include.</p>
       <div class="hero-cta">
@@ -52,7 +59,7 @@
         <a class="btn hero-btn" href="#howCard">How it works</a>
       </div>
       <dl class="hero-stats">
-        <div><dt>468</dt><dd>landmarks tracked</dd></div>
+        <div><dt>40</dt><dd>lip landmarks drawn</dd></div>
         <div><dt>0</dt><dd>bytes uploaded</dd></div>
         <div><dt>100%</dt><dd>processed locally</dd></div>
       </dl>

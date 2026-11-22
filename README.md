@@ -9,7 +9,10 @@ lip-region landmark tracking, and records short clips locally in the browser.
   Video never leaves the browser; nothing is uploaded.
 - **Live lip-region tracking visualisation** — loads MediaPipe Face Mesh from the
   jsDelivr CDN (`@mediapipe/face_mesh`) and draws the lip landmark points and
-  the outer/inner lip outlines on a canvas overlay in real time. The points
+  the outer/inner lip outlines on a canvas overlay in real time. The model
+  returns 468 face points; this prototype draws the **40 lip points** (20
+  outer + 20 inner contour) — the hero says 40, the number actually drawn.
+  The points
   are temporally smoothed (exponential moving average) so the overlay reads
   as tracked, not jittery, and a live readout shows tracking fps plus lip
   aperture (inner-lip gap as a percentage of lip width), both computed from
@@ -22,8 +25,16 @@ lip-region landmark tracking, and records short clips locally in the browser.
   nothing about the model).
 - **Camera switching** — when the device has more than one camera, a Switch
   camera button appears and cycles front/back without dropping the session.
+  Switching wipes the old camera's lip points from the overlay first, so no
+  stale points linger on the new camera's first frames, and Switch works
+  after Stop too (it starts the next camera). If the camera it asks for is
+  gone, the status line keeps the specific reason ("no camera was found")
+  instead of a generic switch error.
   Camera errors are reported in plain language (permission denied, no camera
-  found, camera in use by another app) instead of raw error names.
+  found, camera in use by another app) instead of raw error names — and an
+  error the app does not recognise says "the camera could not be started",
+  never a guessed blame. A missing camera is never told to "allow camera
+  access"; that advice appears only for permission errors.
 - **Clip recording** — `MediaRecorder` records short clips from the camera
   stream. Clips are listed with playback, a timestamp, duration and size, and
   can be downloaded or deleted. Clips live only in the browser session; refreshing clears them.
@@ -31,7 +42,7 @@ lip-region landmark tracking, and records short clips locally in the browser.
   starting the next immediately cannot mix them up, and the list caps at the
   latest 12 clips (oldest drops off) to bound session memory — and the status
   line says so when it happens, instead of the notice being overwritten by the
-  status refresh. Clip numbers
+  status refresh, and the notice survives Stop camera too. Clip numbers
   never repeat after a delete. A REC timer and the camera resolution (plus the camera's name, once known) show on
   the stage while recording/live. The fps readout counts every tracking result,
   so it is the real frame rate, not the ~4 Hz repaint rate; a face leaving the
@@ -41,6 +52,33 @@ lip-region landmark tracking, and records short clips locally in the browser.
   status message.
 - **Status line** — always shows camera on/off, model loaded/failed, and
   recording state.
+- **Design system** — one signature idea, "the lip line": a single thin
+  lip-contour line in the one accent, repeated in the logo, the favicon, the
+  hero eyebrow dot and the live-stage border. The accent is signal blue
+  `#4f8cff` — the same blue as the lip points on the canvas — used for under
+  10% of any screen; everything else is a neutral ramp plus semantic colours
+  (green ok, amber warn, red danger). Tokens are OKLCH with hex fallbacks in
+  `style.css`, mirrored in `tokens.json`. Dark and light themes are equal
+  citizens: a toggle in the topbar switches them (stored choice wins, else the
+  OS preference, applied before first paint); the video stage stays black in
+  both. Type is Space Grotesk (display), Inter (text), JetBrains Mono (stats
+  and HUD). No gradients, no glass, no glows, no staggered entrances — motion
+  only for state changes (REC pulse, idle wave, a new clip appearing, a
+  pressed button).
+
+### Contrast (WCAG AA, text on page background)
+
+| Token | Dark (`#07080c`) | Light (`#f6f7f9`) |
+| --- | --- | --- |
+| Text | 18.18:1 | 16.60:1 |
+| Muted | 7.87:1 | 5.58:1 |
+| Muted-2 | 5.38:1 | 5.00:1 |
+| Accent | 6.22:1 | 5.04:1 |
+| Danger | 6.17:1 | 5.05:1 |
+| Ok | 10.41:1 | 5.01:1 |
+| Warn | 11.37:1 | 5.17:1 |
+| Honest-note text | 14.60:1 | 6.86:1 |
+| White on accent fill (`#2b63d9`, buttons) | 5.40:1 | 5.40:1 |
 - **Resilient by design** — if the camera disappears mid-session (unplugged,
   permission revoked, another app takes it) the app stops cleanly and says so
   in plain language instead of freezing. The Face Mesh model gets up to 30
@@ -119,22 +157,28 @@ no real camera is involved, and they prove nothing about a real device:
 
 ```bash
 npm install   # jsdom only, dev dependency
-npm test      # 100 checks, all green
+npm test      # 138 checks, all green
 ```
 
 Covered: initial render and honest note, CDN-failure fallback, lip-draw path
 with smoothing, no-face and malformed results, stop-while-loading pill reset,
 FaceMesh reuse, late-result race, recording / download / transcribe / delete,
 monotonic clip numbering after a delete, 12-clip cap (and the cap notice
-surviving in the status line), live track stats
+surviving in the status line, and surviving Stop camera),
+live track stats
 (fps + lip aperture — fps counts every result, not the repaint rate),
 EMA recovery when a lip point is missing on the first frame,
 `[hidden]` really hiding the face-box guide and HUD chips (computed display
 against the real stylesheet), camera switch (2 cameras offered, 1 camera hidden;
 switch moves to a genuinely different camera when the default is not the first
-enumerated device; res chip names the camera in use),
+enumerated device; res chip names the camera in use; switch clears the old
+camera's stale lip points; switch works after Stop; a failed switch keeps the
+specific reason),
+hero copy says 40 lip landmarks, unknown camera errors get a neutral message
+and NotFoundError gets no "allow camera access" advice,
 snapshot with overlay, unexpected camera-track end, camera denied / no
 camera / no camera API (all plain-language), and no camera API at all.
+Dark/light theme toggle (stored choice wins, OS preference otherwise).
 The live-camera check still has to happen on a real device (see above).
 
 Round 7 also verified the UI in a real headless Chrome (stock build, served
@@ -147,14 +191,27 @@ encoder's first chunk takes a few seconds to arrive there, not an app bug;
 the app reports it honestly ("recording produced no data — clip discarded").
 A real face on a real camera is still untested — that check is Siva's.
 
+Round 10 (22 Nov 2026) applied the 5 fixes a read-only review had found
+(switch clears stale lip points and works after Stop; 40 not 468; unknown
+camera errors no longer blame permission; cap notice survives Stop), added a
+single-accent OKLCH design system with a light theme and a dark/light toggle,
+and re-rendered desktop 1280px + mobile 390px in both themes
+(`screenshots/round10/`, zero horizontal overflow on both widths, verified
+via CDP because this build's `--screenshot` flag writes nothing — see
+`scripts/README.md`). Tests 100 → 138 checks, all green.
+
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `index.html` | Page structure, honest-note banner, camera stage, clip list |
-| `style.css` | Dark theme, cards, stage overlay, face-box guide |
+| `style.css` | Dark + light theme, OKLCH tokens, cards, stage overlay, face-box guide |
+| `tokens.json` | Design tokens (OKLCH + hex, both themes) |
 | `app.js` | Camera, Face Mesh tracking, recording, clips, fallback handling |
-| `tests/run-tests.js` | jsdom test suite (`npm test`, 84 checks) |
+| `tests/run-tests.js` | jsdom test suite (`npm test`, 138 checks) |
+| `scripts/cdp-screenshot.py` | Headless-Chrome screenshot recipe (CDP; the `--screenshot` flag writes nothing in this build) |
+| `scripts/webgl-policy.txt` | WebGL domain policy file Chrome needs to start here |
+| `screenshots/round10/` | Round-10 renders: desktop 1280px + mobile 390px, dark + light |
 | `package.json` | Test script + jsdom dev dependency (no build step for the app itself) |
 
 ## Dependencies

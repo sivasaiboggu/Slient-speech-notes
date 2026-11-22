@@ -1,30 +1,91 @@
-/* Silent-Speech Notes — premium dark theme.
+/* Silent-Speech Notes — dark + light theme.
  *
- * Tokens: one near-black background, violet→cyan accent gradient,
- * glass cards, tight display type. Motion is quiet and purposeful;
- * reduced-motion turns it all off.
+ * Tokens: OKLCH with a hex line above each one (the OKLCH line wins where
+ * supported). ONE accent — signal blue #4f8cff, the same blue as the lip
+ * points drawn on the canvas, so the interface and the tracking share one
+ * colour. Everything else is a warm/cool-tinted neutral ramp plus semantic
+ * colours (green ok, amber warn, red danger). Accent is used sparingly:
+ * the lip-line logo, the accent word in the hero, primary buttons, step
+ * numbers, the live-stage border. No gradients, no glass, no glows.
+ *
+ * Signature visual idea: "the lip line" — one thin lip-contour line, drawn
+ * in the accent, repeated with discipline (logo, favicon, hero eyebrow dot,
+ * stage live border). Motion only for state changes: the REC pulse, the
+ * idle wave, a new clip appearing, a pressed button. No entrance animation.
  */
 
 :root {
   --bg: #07080c;
+  --bg: oklch(0.145 0.012 264);
   --surface: rgba(255, 255, 255, 0.03);
   --surface-2: rgba(255, 255, 255, 0.055);
   --border: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
   --text: #f2f4f8;
+  --text: oklch(0.95 0.006 260);
   --muted: #9aa3b2;
-  --muted-2: #6b7484;
-  --violet: #7c5cff;
-  --cyan: #38e1ff;
-  --accent: #8b7bff;
-  --accent-soft: rgba(124, 92, 255, 0.14);
+  --muted: oklch(0.68 0.018 258);
+  --muted-2: #7d8593;
+  --muted-2: oklch(0.56 0.014 258);
+  --accent: #4f8cff;
+  --accent: oklch(0.65 0.15 258);
+  --accent-fill: #2b63d9; /* button fill: white text on it is 5.40:1 */
+  --accent-soft: rgba(79, 140, 255, 0.12);
   --danger: #ff4d5e;
+  --danger: oklch(0.65 0.19 12);
   --danger-soft: rgba(255, 77, 94, 0.14);
   --ok: #34d399;
+  --ok: oklch(0.78 0.14 165);
   --warn: #f5b94d;
+  --warn: oklch(0.80 0.12 85);
+  --note-bg: rgba(245, 185, 77, 0.10);
+  --note-border: rgba(245, 185, 77, 0.25);
+  --note-text: #f5d9a0;
+  --note-text: oklch(0.87 0.07 85);
+  --note-strong: #ffd97a;
+  --hover: rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.28);
+  --shadow-clip: 0 8px 20px rgba(0, 0, 0, 0.25);
   --radius: 20px;
   --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Light theme: same tokens, same accent idea. The video stage stays black
+ * in both themes — it is a video surface, not a page surface. */
+[data-theme="light"] {
+  --bg: #f6f7f9;
+  --bg: oklch(0.965 0.004 260);
+  --surface: #ffffff;
+  --surface-2: #eef0f3;
+  --border: #e2e5ea;
+  --border: oklch(0.90 0.005 260);
+  --border-strong: #c6ccd4;
+  --text: #14181f;
+  --text: oklch(0.23 0.01 260);
+  --muted: #5b6472;
+  --muted: oklch(0.45 0.014 258);
+  --muted-2: #646b78;
+  --muted-2: oklch(0.44 0.012 258);
+  --accent: #2b63d9;
+  --accent: oklch(0.52 0.14 258);
+  --accent-fill: #2b63d9;
+  --accent-soft: rgba(43, 99, 217, 0.10);
+  --danger: #c92a3c;
+  --danger: oklch(0.52 0.17 12);
+  --danger-soft: rgba(201, 42, 60, 0.10);
+  --ok: #0e7a4d;
+  --ok: oklch(0.55 0.12 165);
+  --warn: #8a6100;
+  --warn: oklch(0.55 0.10 85);
+  --note-bg: #fdf3d7;
+  --note-border: #e8cf8a;
+  --note-text: #6d5200;
+  --note-strong: #7a5b00;
+  --hover: rgba(20, 24, 31, 0.06);
+  --shadow-card: 0 12px 28px rgba(20, 24, 31, 0.08);
+  --shadow-clip: 0 8px 18px rgba(20, 24, 31, 0.10);
 }
 
 * { box-sizing: border-box; }
@@ -35,7 +96,7 @@
  * this, the guide and chips showed while they should have been hidden. */
 [hidden] { display: none !important; }
 
-::selection { background: rgba(124, 92, 255, 0.4); color: #fff; }
+::selection { background: var(--accent); color: #fff; }
 
 html { scroll-behavior: smooth; }
 
@@ -49,18 +110,6 @@ body {
   overflow-x: hidden;
 }
 
-/* Aurora wash behind everything — two soft colour fields, nothing loud. */
-.aurora {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(720px 420px at 12% -80px, rgba(124, 92, 255, 0.16), transparent 65%),
-    radial-gradient(680px 420px at 88% -40px, rgba(56, 225, 255, 0.10), transparent 65%),
-    radial-gradient(900px 600px at 50% 115%, rgba(124, 92, 255, 0.07), transparent 70%);
-}
-
 /* ---------- Header ---------- */
 .topbar {
   position: sticky;
@@ -72,16 +121,18 @@ body {
   gap: 1rem;
   padding: 0.8rem 1.5rem;
   border-bottom: 1px solid var(--border);
-  background: rgba(7, 8, 12, 0.72);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--bg);
   flex-wrap: wrap;
 }
 
 .brand { display: flex; align-items: center; gap: 0.75rem; }
-.logo { display: flex; line-height: 0; }
+/* The lip line, in the accent: the one repeated mark of the whole page. */
+.logo { display: flex; line-height: 0; color: var(--accent); }
 .topbar h1 { margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; font-weight: 700; }
 .subtitle { margin: 0.05rem 0 0; color: var(--muted); font-size: 0.82rem; }
+
+.topbar-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.theme-btn { padding: 0.4rem 0.85rem; font-size: 0.82rem; border-radius: 999px; }
 
 .pill {
   font-size: 0.8rem;
@@ -101,14 +152,14 @@ body {
 
 /* ---------- Honest note (always visible) ---------- */
 .honest-note {
-  background: linear-gradient(90deg, rgba(245, 185, 77, 0.10), rgba(245, 185, 77, 0.05));
-  border-bottom: 1px solid rgba(245, 185, 77, 0.25);
-  color: #f5d9a0;
+  background: var(--note-bg);
+  border-bottom: 1px solid var(--note-border);
+  color: var(--note-text);
   padding: 0.65rem 1.5rem;
   font-size: 0.88rem;
   text-align: center;
 }
-.honest-note strong { color: #ffd97a; }
+.honest-note strong { color: var(--note-strong); }
 
 /* ---------- Page / hero ---------- */
 .page {
@@ -117,10 +168,7 @@ body {
   padding: 0 1.25rem 2.5rem;
 }
 
-.hero {
-  padding: 3.25rem 0 2.5rem;
-  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
+.hero { padding: 3.25rem 0 2.5rem; }
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -138,22 +186,17 @@ body {
 .eyebrow-dot {
   width: 7px; height: 7px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--violet), var(--cyan));
-  box-shadow: 0 0 10px rgba(124, 92, 255, 0.9);
+  background: var(--accent);
 }
 .hero-title {
   margin: 0 0 1rem;
+  font-family: var(--display);
   font-size: clamp(2.3rem, 5.4vw, 3.7rem);
   line-height: 1.04;
   letter-spacing: -0.035em;
-  font-weight: 800;
+  font-weight: 700;
 }
-.grad {
-  background: linear-gradient(92deg, var(--violet) 0%, #a78bff 45%, var(--cyan) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
+.accent-word { color: var(--accent); }
 .hero-sub {
   margin: 0 0 1.5rem;
   max-width: 620px;
@@ -194,24 +237,20 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1.1rem 1.2rem;
-  animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.steps .step:nth-child(1) { animation-delay: 0.06s; }
-.steps .step:nth-child(2) { animation-delay: 0.12s; }
-.steps .step:nth-child(3) { animation-delay: 0.18s; }
 .step-n {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 26px; height: 26px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--violet), var(--cyan));
+  background: var(--accent-fill);
   color: #fff;
   font-size: 0.8rem;
   font-weight: 700;
   margin-bottom: 0.6rem;
 }
-.step h3 { margin: 0 0 0.25rem; font-size: 0.98rem; letter-spacing: -0.01em; }
+.step h3 { margin: 0 0 0.25rem; font-family: var(--display); font-size: 0.98rem; letter-spacing: -0.01em; }
 .step p { margin: 0; color: var(--muted); font-size: 0.88rem; }
 
 /* ---------- Layout / cards ---------- */
@@ -228,13 +267,11 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1.15rem 1.25rem;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-  animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  box-shadow: var(--shadow-card);
 }
-.layout > .card:nth-child(1) { animation-delay: 0.08s; }
-.layout > .card:nth-child(2) { animation-delay: 0.16s; }
-.layout > .card:nth-child(3) { animation-delay: 0.24s; }
 
+/* New clip appearing is a state change, so it may animate in. Nothing else
+ * on the page animates on load. */
 @keyframes rise {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
@@ -246,17 +283,17 @@ body {
   gap: 0.5rem;
   margin-bottom: 0.85rem;
 }
-.card-head h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.02em; font-weight: 700; flex: 1; }
+.card-head h2 { margin: 0; font-family: var(--display); font-size: 1.05rem; letter-spacing: -0.02em; font-weight: 700; flex: 1; }
 
 .status-dot {
   width: 10px; height: 10px;
   border-radius: 50%;
   background: #5a6675;
   flex: none;
-  transition: background-color 200ms ease, box-shadow 200ms ease;
+  transition: background-color 200ms ease;
 }
-.status-dot.on { background: var(--ok); box-shadow: 0 0 10px rgba(52, 211, 153, 0.9); }
-.status-dot.rec { background: var(--danger); box-shadow: 0 0 10px rgba(255, 77, 94, 0.95); animation: pulse 1s infinite; }
+.status-dot.on { background: var(--ok); }
+.status-dot.rec { background: var(--danger); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
 #cameraStatusText { color: var(--muted); font-size: 0.85rem; }
@@ -274,13 +311,10 @@ body {
   border: 1px solid var(--border);
   transition: border-color 300ms ease, box-shadow 300ms ease;
 }
-/* Live glow: a soft accent halo while the camera runs, so the live state
-   reads at a glance. */
+/* Live state reads at a glance: solid accent border + 1px inner border. */
 .stage.live {
-  border-color: rgba(124, 92, 255, 0.55);
-  box-shadow:
-    inset 0 0 0 1px rgba(124, 92, 255, 0.18),
-    0 0 32px rgba(124, 92, 255, 0.18);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
 }
 .stage video, .stage canvas {
   position: absolute;
@@ -301,8 +335,6 @@ body {
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
   color: #fff;
   font-family: var(--mono);
   font-size: 0.72rem;
@@ -311,7 +343,7 @@ body {
 }
 .hud-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); animation: pulse 1s infinite; }
 .hud-live { top: 0.7rem; left: 0.7rem; display: none; }
-.hud-live .hud-dot { background: var(--ok); animation: none; box-shadow: 0 0 8px rgba(52, 211, 153, 0.9); }
+.hud-live .hud-dot { background: var(--ok); animation: none; }
 .stage.live .hud-live { display: inline-flex; }
 .hud-res { top: 0.7rem; right: 0.7rem; }
 .hud-rec { bottom: 0.7rem; left: 0.7rem; border-color: rgba(255, 77, 94, 0.5); }
@@ -326,11 +358,9 @@ body {
   text-align: center;
   padding: 1rem;
   color: var(--muted);
-  background:
-    radial-gradient(420px 200px at 50% 120%, rgba(124, 92, 255, 0.14), transparent 70%),
-    #0a0d12;
+  background: #0a0d12;
 }
-.stage-empty .empty-title { color: var(--text); font-weight: 700; font-size: 1.05rem; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+.stage-empty .empty-title { color: #f2f4f8; font-weight: 700; font-size: 1.05rem; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
 .stage-empty p { margin: 0; max-width: 360px; font-size: 0.9rem; }
 
 /* Animated waveform while idle — motion that says "listening", not noise. */
@@ -338,7 +368,7 @@ body {
 .wave span {
   width: 4px;
   border-radius: 4px;
-  background: linear-gradient(180deg, var(--violet), var(--cyan));
+  background: var(--accent);
   animation: wave 1.4s ease-in-out infinite;
 }
 .wave span:nth-child(1) { height: 40%; animation-delay: 0s; }
@@ -419,35 +449,19 @@ body {
   cursor: pointer;
   transition: border-color 150ms ease, background-color 150ms ease, transform 100ms ease, filter 150ms ease, box-shadow 150ms ease;
 }
-.btn:hover:not(:disabled) { border-color: var(--border-strong); background: rgba(255, 255, 255, 0.08); }
+.btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--hover); }
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn.primary {
-  background: linear-gradient(135deg, var(--violet), #5b8cff 55%, var(--cyan));
+  background: var(--accent-fill);
   border-color: transparent;
   color: #fff;
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 6px 20px rgba(124, 92, 255, 0.35);
+  box-shadow: 0 6px 20px rgba(43, 99, 217, 0.30);
 }
-/* Shine sweep on hover: a diagonal light pass, subtle enough to feel
-   crafted rather than flashy. */
-.btn.primary::after {
-  content: "";
-  position: absolute;
-  top: 0; bottom: 0;
-  left: -60%;
-  width: 40%;
-  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.28), transparent);
-  transform: skewX(-20deg);
-  transition: left 500ms ease;
-  pointer-events: none;
-}
-.btn.primary:hover:not(:disabled)::after { left: 130%; }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .btn.danger.recording {
-  background: linear-gradient(135deg, #ff4d5e, #d92c3f);
+  background: var(--danger);
   border-color: transparent;
   color: #fff;
   box-shadow: 0 6px 20px rgba(255, 77, 94, 0.35);
@@ -481,7 +495,7 @@ body {
   transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
   animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.clip:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25); }
+.clip:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-clip); }
 .clip video { width: 100%; border-radius: 10px; background: #000; display: block; }
 .clip-meta {
   display: flex;
@@ -500,15 +514,15 @@ body {
   margin: 0.55rem 0 0;
   font-size: 0.85rem;
   color: var(--warn);
-  background: rgba(245, 185, 77, 0.08);
-  border: 1px solid rgba(245, 185, 77, 0.35);
+  background: var(--note-bg);
+  border: 1px solid var(--note-border);
   border-radius: 8px;
   padding: 0.5rem 0.6rem;
 }
 .clip-note:empty { display: none; }
 
 /* ---------- Limits ---------- */
-.limits-card h2 { margin: 0 0 0.75rem; font-size: 1.05rem; letter-spacing: -0.02em; font-weight: 700; }
+.limits-card h2 { margin: 0 0 0.75rem; font-family: var(--display); font-size: 1.05rem; letter-spacing: -0.02em; font-weight: 700; }
 .limits-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1.5rem; }
 .limits { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.45rem; align-content: start; }
 .limits li { font-size: 0.94rem; }
