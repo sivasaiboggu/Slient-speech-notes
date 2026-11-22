@@ -1,164 +1,156 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Silent-Speech Notes prototype — live camera preview with lip-region landmark tracking in the browser. No lip-reading transcription; nothing is uploaded.">
-<meta name="theme-color" content="#07080c">
-<script>
-  // Theme before first paint: stored choice wins, otherwise the OS preference.
-  try {
-    var ssnTheme = localStorage.getItem('ssn-theme');
-    if (ssnTheme !== 'dark' && ssnTheme !== 'light') {
-      ssnTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-    }
-    document.documentElement.setAttribute('data-theme', ssnTheme);
-  } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
-</script>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 16 C9 10.5 13 10.5 16 13.5 C19 10.5 23 10.5 27 16 C23 21.5 19 21.5 16 18.5 C13 21.5 9 21.5 5 16 Z' fill='none' stroke='%234f8cff' stroke-width='2.2' stroke-linejoin='round'/%3E%3C/svg%3E">
-<title>Silent-Speech Notes — Prototype</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/ 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/ https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="See 40 lip landmarks move with your camera. Record short clips and save snapshots in your browser.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Silent-Speech Notes">
+  <meta property="og:description" content="A camera workspace for watching lip movement and saving clips locally.">
+  <meta property="og:image" content="https://sivasaiboggu.github.io/Slient-speech-notes/assets/social.png">
+  <meta property="og:image:alt" content="Silent-Speech Notes with a diagram of 40 lip landmarks in the viewfinder">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="theme-color" content="#f4f2e9">
+  <title>Silent-Speech Notes</title>
+  <script src="theme.js"></script>
+  <link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="preload" href="assets/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round">
-          <path d="M5 16 C9 10.5 13 10.5 16 13.5 C19 10.5 23 10.5 27 16 C23 21.5 19 21.5 16 18.5 C13 21.5 9 21.5 5 16 Z"/>
+  <a class="skip-link" href="#cameraCard">Skip to camera</a>
+  <header class="site-header">
+    <div class="shell masthead">
+      <a class="brand" href="./">
+        <svg viewBox="0 0 40 30" width="36" height="28" fill="none" aria-hidden="true">
+          <path d="M2 16c7-1 11-10 18-5 7-5 11 4 18 5-7 7-13 10-18 10S9 23 2 16Z" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M2 16c8 1 12-2 18-1 6-1 10 2 18 1" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="2" cy="16" r="1.5" fill="currentColor"/><circle cx="38" cy="16" r="1.5" fill="currentColor"/>
         </svg>
-      </span>
-      <div>
-        <h1>Silent-Speech Notes</h1>
-        <p class="subtitle">Camera + lip-region tracking prototype</p>
-      </div>
-    </div>
-    <div class="topbar-actions">
-      <button class="btn theme-btn" id="themeBtn" type="button">Light mode</button>
-      <span class="pill" id="modelPill">Model: not loaded</span>
+        <span>Silent-Speech Notes</span>
+      </a>
+      <nav aria-label="On this page">
+        <a href="#cameraCard">Camera</a>
+        <a href="#clips">Clips</a>
+        <a href="#howCard">Guide</a>
+      </nav>
+      <button class="button theme-button" id="themeBtn" type="button">Dark mode</button>
     </div>
   </header>
 
-  <!-- Honest note — always visible -->
-  <div class="honest-note" role="note">
-    <strong>Prototype demo</strong> — true lip-reading transcription needs a dedicated trained model
-    and is <strong>NOT included</strong>. No transcripts are generated or claimed.
-  </div>
-
-  <main class="page">
-    <section class="hero">
-      <p class="eyebrow"><span class="eyebrow-dot"></span>Prototype · 100% on-device · Nothing uploaded</p>
-      <h2 class="hero-title">Mouth the words.<br>Watch your <span class="accent-word">lips</span> move.</h2>
-      <p class="hero-sub">Point your camera at your face and watch 40 lip landmarks track you
-      live in the browser. Your video never leaves this tab — and this prototype
-      does not transcribe, because real lip-reading needs a trained model it does not include.</p>
-      <div class="hero-cta">
-        <a class="btn primary hero-btn" href="#cameraCard">Open the camera ↓</a>
-        <a class="btn hero-btn" href="#howCard">How it works</a>
+  <main class="shell">
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <p class="label intro-label">Camera prototype</p>
+        <h1 id="page-title">See your lips<br class="title-break"> in motion.</h1>
       </div>
-      <dl class="hero-stats">
-        <div><dt>40</dt><dd>lip landmarks drawn</dd></div>
-        <div><dt>0</dt><dd>bytes uploaded</dd></div>
-        <div><dt>100%</dt><dd>processed locally</dd></div>
-      </dl>
+      <div class="intro-copy">
+        <p>Watch 40 lip landmarks follow your mouth as you move. Record a clip or save a still. Your video stays in this browser tab.</p>
+        <p class="scope-note">Transcription is unavailable in this prototype.</p>
+      </div>
     </section>
 
-    <section class="steps" id="howCard" aria-label="How it works">
-      <div class="step"><span class="step-n">1</span><h3>Allow the camera</h3><p>Your video stays in this tab. Nothing is recorded until you press record.</p></div>
-      <div class="step"><span class="step-n">2</span><h3>Mouth words silently</h3><p>Blue dots and outlines follow your lips in real time while the model runs.</p></div>
-      <div class="step"><span class="step-n">3</span><h3>Record &amp; download</h3><p>Save clips and snapshots on this device. Transcription is not part of this prototype.</p></div>
-    </section>
-
-    <div class="layout">
-      <section class="card camera-card" id="cameraCard">
-        <div class="card-head">
-          <h2>Camera</h2>
-          <span class="status-dot" id="cameraDot" aria-hidden="true"></span>
-          <span id="cameraStatusText">Camera off</span>
+    <div class="workspace">
+      <section class="camera" id="cameraCard" aria-labelledby="camera-title" tabindex="-1">
+        <div class="section-head">
+          <h2 id="camera-title">Viewfinder</h2>
+          <p class="camera-state"><span class="status-dot" id="cameraDot" aria-hidden="true"></span><span id="cameraStatusText">Camera off</span></p>
         </div>
 
         <div class="stage" id="stage" role="region" aria-label="Camera preview">
-          <video id="video" autoplay muted playsinline></video>
-          <canvas id="overlay"></canvas>
-          <span class="hud hud-live" id="liveChip" aria-hidden="true"><span class="hud-dot"></span>LIVE</span>
-          <span class="hud hud-res" id="resChip" hidden>1280×720</span>
-          <span class="hud hud-rec" id="recHud" hidden><span class="hud-dot"></span>REC&nbsp;<span id="recTimer">00:00</span></span>
+          <video id="video" autoplay muted playsinline aria-label="Live camera feed"></video>
+          <canvas id="overlay" aria-hidden="true"></canvas>
+          <span class="hud hud-live" aria-hidden="true"><span class="hud-dot"></span>Live</span>
+          <span class="hud hud-res" id="resChip" hidden></span>
+          <span class="hud hud-rec" id="recHud" hidden><span class="hud-dot"></span>Rec <span id="recTimer">00:00</span></span>
           <div class="stage-empty" id="stageEmpty">
-            <div class="wave" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
-            <p class="empty-title">Camera preview</p>
-            <p>Press <strong>Start camera</strong> below. Your video stays in this browser tab — nothing is uploaded.</p>
+            <p class="label stage-label">Reference contour</p>
+            <div class="viewfinder-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <div class="reference">
+              <svg class="contour" viewBox="0 0 400 144" fill="none" aria-hidden="true">
+                <!-- 20 points per contour, matching the count in the live drawing. -->
+                <path class="crosshairs" d="M0 72h400M200 0v144"/>
+                <polygon class="contour-line" points="18,76 37,64 61,49 92,32 119,21 147,17 173,26 200,35 227,26 253,17 281,21 308,32 339,49 363,64 382,76 343,95 280,117 200,127 120,117 57,95"/>
+                <polygon class="contour-line contour-inner" points="42,76 63,73 88,67 111,60 140,55 170,57 200,63 230,57 260,55 289,60 312,67 337,73 358,76 320,82 281,88 244,94 200,97 156,94 119,88 80,82"/>
+                <path class="contour-points" d="M18 76h.01M37 64h.01M61 49h.01M92 32h.01M119 21h.01M147 17h.01M173 26h.01M200 35h.01M227 26h.01M253 17h.01M281 21h.01M308 32h.01M339 49h.01M363 64h.01M382 76h.01M343 95h.01M280 117h.01M200 127h.01M120 117h.01M57 95h.01M42 76h.01M63 73h.01M88 67h.01M111 60h.01M140 55h.01M170 57h.01M200 63h.01M230 57h.01M260 55h.01M289 60h.01M312 67h.01M337 73h.01M358 76h.01M320 82h.01M281 88h.01M244 94h.01M200 97h.01M156 94h.01M119 88h.01M80 82h.01"/>
+              </svg>
+              <p>Start the camera to see your own landmarks.</p>
+            </div>
+            <p class="label stage-index" aria-hidden="true"><span>40 points</span><span>Outer + inner lip</span></p>
           </div>
-          <!-- Fallback face-box guide, shown only when the model is unavailable -->
           <div class="face-guide" id="faceGuide" hidden>
-            <div class="face-box"></div>
-            <p class="face-guide-text">Face-box guide — centre your face in the frame.<br>
-            Lip tracking is unavailable (model failed to load).</p>
+            <div class="face-box" aria-hidden="true"></div>
+            <p class="face-guide-text">Centre your face in the frame.</p>
           </div>
         </div>
 
-        <p class="track-stats" id="trackStats"></p>
-        <p class="status-line" id="statusLine" aria-live="polite">Status: idle. Camera off · Model not loaded.</p>
-
-        <div class="controls">
-          <button id="startBtn" class="btn primary">Start camera</button>
-          <button id="stopBtn" class="btn" disabled>Stop camera</button>
-          <button id="switchBtn" class="btn" hidden>⇄ Switch camera</button>
-          <button id="recordBtn" class="btn danger" disabled aria-pressed="false">● Record clip</button>
-          <button id="snapshotBtn" class="btn" disabled>Snapshot</button>
+        <div class="controls" aria-label="Camera controls">
+          <div class="control-group">
+            <button id="startBtn" class="button primary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="1"/><path d="m16 10 5-3v10l-5-3"/></svg>
+              Start camera
+            </button>
+            <button id="stopBtn" class="button" type="button" disabled>Stop camera</button>
+            <button id="switchBtn" class="button" type="button" hidden>Switch camera</button>
+          </div>
+          <div class="control-group capture-controls">
+            <button id="recordBtn" class="button record-button" type="button" disabled aria-pressed="false"><span id="recordLabel">Record clip</span></button>
+            <button id="snapshotBtn" class="button" type="button" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h4l2-3h6l2 3h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg>
+              Snapshot
+            </button>
+          </div>
         </div>
-
-        <p class="hint">
-          Lip tracking draws the detected lip landmark points and outline on the live preview.
-          If the tracking model cannot load, a simple face-box guide is shown instead and the status line says so.
-          Recording captures short clips locally in your browser only.
-        </p>
+        <div class="readout">
+          <p id="modelPill" class="model-state">Model: not loaded</p>
+          <p id="trackStats" class="tracking-stats"></p>
+        </div>
+        <p class="status-line" id="statusLine" role="status">Start the camera when you’re ready.</p>
       </section>
 
-      <section class="card clips-card">
-        <div class="card-head">
-          <h2>Recorded clips</h2>
-          <span class="count" id="clipCount">0 clips</span>
+      <section class="clips" id="clips" aria-labelledby="clips-title">
+        <div class="section-head">
+          <h2 id="clips-title">Session clips</h2>
+          <p class="clip-count" id="clipCount" aria-live="polite">0 clips</p>
         </div>
-        <p class="hint">Clips are stored only in this browser session — refreshing the page clears them. The list keeps the latest 12.</p>
         <ul class="clip-list" id="clipList">
           <li class="clip-empty" id="clipEmpty">
-            <span class="clip-empty-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="14" rx="3"/><path d="M16 10.5l6-3.5v10l-6-3.5"/></svg>
-            </span>
+            <svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M4 7h24v18H4zM4 12h24M4 20h24M9 7v5m7-5v5m7-5v5M9 20v5m7-5v5m7-5v5"/>
+            </svg>
             <strong>No clips yet</strong>
-            <span>Start the camera and record a short clip — it stays on this device.</span>
+            <p>Start the camera, then choose <strong>Record clip</strong>. Your recording will appear here.</p>
           </li>
         </ul>
-      </section>
-
-      <section class="card limits-card">
-        <h2>What this prototype does — and does not do</h2>
-        <div class="limits-grid">
-          <ul class="limits">
-            <li><span class="yes">✓</span> Captures camera video in the browser (<code>getUserMedia</code>).</li>
-            <li><span class="yes">✓</span> Visualises lip-region landmarks in real time when the MediaPipe Face Mesh model loads.</li>
-            <li><span class="yes">✓</span> Records short clips locally with <code>MediaRecorder</code> and plays them back.</li>
-          </ul>
-          <ul class="limits">
-            <li><span class="no">✕</span> Does <strong>not</strong> read lips or produce transcripts.</li>
-            <li><span class="no">✕</span> Does <strong>not</strong> claim any accuracy — there is no recognition model here.</li>
-            <li><span class="no">✕</span> Does <strong>not</strong> upload video anywhere; everything stays on this device.</li>
-          </ul>
-        </div>
-        <p class="hint">Real silent-speech transcription would need a dedicated trained lip-reading model
-        (trained on video–text pairs), which is out of scope for this prototype.</p>
+        <p class="clip-policy">Download anything you want to keep. This tab holds the latest 12 clips until you refresh or close it.</p>
       </section>
     </div>
+
+    <section class="guide" id="howCard" aria-labelledby="guide-title">
+      <div>
+        <p class="label">First session</p>
+        <h2 id="guide-title">How it works</h2>
+      </div>
+      <div class="guide-body">
+        <ol>
+          <li><strong>Turn on your camera.</strong> Choose <strong>Start camera</strong> and allow access in the browser.</li>
+          <li><strong>Move into view.</strong> Move your lips and watch the outline follow. If the model can’t load, a framing guide appears.</li>
+          <li><strong>Keep a take.</strong> Record a clip or save a snapshot. Snapshots include the outline when tracking is active.</li>
+        </ol>
+        <p class="honest-note"><strong>About transcription</strong><br>This prototype shows lip movement. It cannot turn speech into text.</p>
+      </div>
+    </section>
   </main>
 
-  <footer class="footer">
-    Silent-Speech Notes · prototype for Siva · All processing is local to this browser.
+  <footer class="shell site-footer">
+    <span>Silent-Speech Notes</span>
+    <a href="privacy.html">Camera and privacy</a>
   </footer>
-
-  <!-- MediaPipe Face Mesh + drawing helpers, loaded from CDN. If these fail, the app falls back to the face-box guide. -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -60,13 +60,15 @@ function check(name, cond, extra) {
 async function makePage(opts = {}) {
   const faceMeshMode = opts.faceMesh || 'fake';
   const htmlRaw = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-  const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const themeJs = fs.readFileSync(path.join(ROOT, 'theme.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8')
+    .replace("import('./tracker.mjs')", 'window.__loadTracker()');
   const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
   // Inline the app script and the real stylesheet, and strip external
   // resources, so the test needs no server — and so computed-style checks
   // (e.g. [hidden] actually hiding an element) test the real CSS.
   const html = htmlRaw
-    .replace(/<script[^>]*face_mesh[^>]*><\/script>/, '<!-- face_mesh cdn stripped for tests -->')
+    .replace('<script src="theme.js"></script>', () => `<script>${themeJs}</script>`)
     .replace(/<link[^>]*>/g, '<!-- link stripped for tests -->')
     .replace(/<script src="app\.js"><\/script>/, () => `<script>${appJs}</script>`)
     .replace('</head>', () => `<style>${css}</style></head>`);
@@ -188,18 +190,22 @@ async function makePage(opts = {}) {
         }
       };
 
-      if (faceMeshMode === 'fake') {
-        window.FaceMesh = class FakeFaceMesh {
-          constructor() { window.__faceMeshCount += 1; }
-          setOptions() {}
-          onResults(cb) { window.__faceMeshCb = cb; }
-          async send() {
-            window.__sendCalls += 1;
-            if (window.__sendNever) await new Promise(() => {});
-            else await sleep(5);
-          }
+      window.__loadTracker = async () => {
+        if (faceMeshMode === 'missing') throw new Error('Simulated tracker load failure');
+        return {
+          async createFaceTracker(onResults) {
+            window.__faceMeshCount += 1;
+            window.__faceMeshCb = onResults;
+            return {
+              async send() {
+                window.__sendCalls += 1;
+                if (window.__sendNever) await new Promise(() => {});
+                else await sleep(5);
+              },
+            };
+          },
         };
-      }
+      };
     },
   });
 
@@ -218,16 +224,17 @@ async function makePage(opts = {}) {
 function overlayCalls(page) {
   return page.contexts.length ? page.contexts[0].calls : [];
 }
-function drawCallCount(page) {
-  return overlayCalls(page).filter((c) => c.method === 'arc' || c.method === 'moveTo' || c.method === 'lineTo').length;
+function pointDrawCount(page) {
+  return overlayCalls(page).filter((c) => c.method === 'arc').length;
 }
 
 async function testInitialRender() {
   console.log('initial render');
   const page = await makePage();
   const { q, errors } = page;
-  check('honest note present and says transcription is NOT included',
-    q('.honest-note').textContent.includes('NOT included'));
+  check('first screen and guide explain the scope of the prototype',
+    q('.scope-note').textContent.includes('Transcription is unavailable') &&
+    q('.honest-note').textContent.includes('cannot turn speech into text'));
   check('pill starts at "Model: not loaded"', q('#modelPill').textContent === 'Model: not loaded');
   check('Start enabled, Stop/Record/Snapshot disabled',
     !q('#startBtn').disabled && q('#stopBtn').disabled && q('#recordBtn').disabled && q('#snapshotBtn').disabled);
@@ -242,11 +249,12 @@ async function testCdnFailure() {
   console.log('CDN failure fallback');
   const page = await makePage({ faceMesh: 'missing' });
   const { q, errors } = page;
-  check('pill reports model failed', q('#modelPill').textContent.includes('failed'));
-  check('status explains the CDN failure', q('#statusLine').textContent.includes('did not load from the CDN'));
+  check('model stays unloaded until camera starts', q('#modelPill').textContent === 'Model: not loaded');
   check('face-box guide hidden until camera starts', q('#faceGuide').hidden === true);
   q('#startBtn').click();
   await sleep(300);
+  check('pill reports model failed', q('#modelPill').textContent.includes('failed'));
+  check('status explains the CDN failure', q('#statusLine').textContent.includes('did not load from the CDN'));
   check('face-box guide appears once camera is on', q('#faceGuide').hidden === false);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
@@ -263,7 +271,8 @@ async function testTrackingDraw() {
   await sleep(300);
   check('pill flips to loaded after results', q('#modelPill').textContent.includes('loaded'));
   check('status says lip tracking active', q('#statusLine').textContent.includes('Lip tracking active'));
-  check('lip points and outlines drawn', drawCallCount(page) > 50, `draw calls: ${drawCallCount(page)}`);
+  check('lip points and outlines drawn', pointDrawCount(page) === 40 &&
+    overlayCalls(page).filter(call => call.method === 'closePath').length === 4);
   check('face guide stays hidden when loaded', q('#faceGuide').hidden === true);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
@@ -277,8 +286,8 @@ async function testNoFaceAndMalformed() {
   await sleep(300);
   window.__faceMeshCb({ multiFaceLandmarks: [] });
   await sleep(150);
-  const noFaceText = overlayCalls(page).some((c) => c.method === 'fillText' && String(c.args[0]).includes('No face detected'));
-  check('empty face list draws "No face detected"', noFaceText);
+  check('empty face list explains how to return to frame',
+    q('#trackStats').textContent.includes('no face in frame. Move into view.'));
   // Malformed results must never throw inside the tracking loop.
   window.__faceMeshCb(null);
   window.__faceMeshCb(undefined);
@@ -318,14 +327,14 @@ async function testLateResultIgnored() {
   await sleep(300);
   window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
   await sleep(200);
-  const drawsBeforeStop = drawCallCount(page);
+  const drawsBeforeStop = pointDrawCount(page);
   check('loaded before stop', q('#modelPill').textContent.includes('loaded'));
   q('#stopBtn').click();
   await sleep(150);
   window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] }); // late result
   await sleep(200);
-  check('late result draws nothing after stop', drawCallCount(page) === drawsBeforeStop,
-    `before ${drawsBeforeStop}, after ${drawCallCount(page)}`);
+  check('late result draws nothing after stop', pointDrawCount(page) === drawsBeforeStop,
+    `before ${drawsBeforeStop}, after ${pointDrawCount(page)}`);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 
@@ -391,7 +400,7 @@ async function testSnapshot() {
     !!snapClick && snapClick.download.endsWith('.png'), JSON.stringify(snapClick || null));
   check('status confirms the snapshot saved', q('#statusLine').textContent.includes('snapshot saved'));
   await sleep(3200);
-  check('status line restores after a few seconds', q('#statusLine').textContent.includes('Camera on'));
+  check('status line restores after a few seconds', q('#statusLine').textContent.includes('Lip tracking') || q('#statusLine').textContent.includes('Loading lip tracking'));
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 }
@@ -475,7 +484,7 @@ async function testSwitchClearsStaleLipPoints() {
   await sleep(200);
   const clearRects = () => overlayCalls(page).filter((c) => c.method === 'clearRect').length;
   const clearsBefore = clearRects();
-  const drawsBefore = drawCallCount(page);
+  const drawsBefore = pointDrawCount(page);
   q('#switchBtn').click();
   await sleep(400);
   check('switch wipes the overlay canvas before the new camera draws',
@@ -487,9 +496,9 @@ async function testSwitchClearsStaleLipPoints() {
   sparse[61] = null;
   window.__faceMeshCb({ multiFaceLandmarks: [sparse] });
   await sleep(200);
-  const frameDraws = drawCallCount(page) - drawsBefore;
+  const frameDraws = pointDrawCount(page) - drawsBefore;
   check('first frame after switch seeds fresh lip points (39, not 40)',
-    frameDraws === 78, `draws: ${frameDraws}`);
+    frameDraws === 39, `draws: ${frameDraws}`);
   check('camera still on after switch', q('#cameraStatusText').textContent === 'Camera on');
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
@@ -551,11 +560,11 @@ async function testFortyLandmarksCopy() {
   const page = await makePage();
   const { q, errors } = page;
   check('hero says 40 lip landmarks and never 468',
-    q('.hero-sub').textContent.includes('40 lip landmarks') &&
-    !q('.hero-sub').textContent.includes('468'), q('.hero-sub').textContent);
-  check('hero stat is 40', q('.hero-stats dt').textContent === '40', q('.hero-stats dt').textContent);
-  check('hero stat label says lip landmarks drawn',
-    q('.hero-stats dd').textContent.includes('lip landmarks drawn'));
+    q('.intro-copy').textContent.includes('40 lip landmarks') &&
+    !q('.intro-copy').textContent.includes('468'), q('.intro-copy').textContent);
+  check('viewfinder labels the reference contour', q('.stage-index').textContent.includes('40 points'));
+  check('reference contains two 20-point contours',
+    [...page.document.querySelectorAll('.contour-line')].map(polygon => polygon.getAttribute('points').split(' ').length).join(',') === '20,20');
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 }
@@ -568,7 +577,7 @@ async function testCapNoticeSurvivesStop() {
   await sleep(300);
   for (let i = 0; i < 13; i += 1) await recordOne(page);
   check('cap notice shows after the 13th clip',
-    q('#statusLine').textContent.includes('oldest clip removed'), q('#statusLine').textContent);
+    q('#statusLine').textContent.toLowerCase().includes('oldest clip removed'), q('#statusLine').textContent);
   q('#stopBtn').click();
   await sleep(200);
   check('cap notice still there after Stop camera',
@@ -686,7 +695,7 @@ async function testClipCap() {
   check('newest clip (Clip 13) is kept',
     !!document.querySelector('.download-btn[download="silent-speech-clip-13.webm"]'));
   check('cap notice survives in the status line (not overwritten by the refresh)',
-    q('#statusLine').textContent.includes('oldest clip removed'), q('#statusLine').textContent);
+    q('#statusLine').textContent.toLowerCase().includes('oldest clip removed'), q('#statusLine').textContent);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 }
@@ -732,20 +741,20 @@ async function testSmoothingNanRecovery() {
   const { window, q, errors } = page;
   q('#startBtn').click();
   await sleep(300);
-  const before = drawCallCount(page);
+  const before = pointDrawCount(page);
   const sparse = LANDMARKS();
   sparse[61] = null; // outer lip corner missing on the first frame
   window.__faceMeshCb({ multiFaceLandmarks: [sparse] });
   await sleep(150);
   // One frame: 39 lip-point arcs + 19 outer + 20 inner polyline calls = 78.
-  const firstFrameDraws = drawCallCount(page) - before;
+  const firstFrameDraws = pointDrawCount(page) - before;
   window.__faceMeshCb({ multiFaceLandmarks: [LANDMARKS()] });
   await sleep(150);
   // Full frame: 40 arcs + 20 + 20 = 80. Without the NaN snap the missing
   // point would stay NaN forever and this frame would draw 78 again.
-  const secondFrameDraws = drawCallCount(page) - before - firstFrameDraws;
-  check('first frame draws 39 lip points (one missing)', firstFrameDraws === 78, `draws: ${firstFrameDraws}`);
-  check('second frame draws all 40 lip points again (no NaN poisoning)', secondFrameDraws === 80, `draws: ${secondFrameDraws}`);
+  const secondFrameDraws = pointDrawCount(page) - before - firstFrameDraws;
+  check('first frame draws 39 lip points (one missing)', firstFrameDraws === 39, `draws: ${firstFrameDraws}`);
+  check('second frame draws all 40 lip points again (no NaN poisoning)', secondFrameDraws === 40, `draws: ${secondFrameDraws}`);
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
 }

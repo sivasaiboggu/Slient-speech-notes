@@ -1,6 +1,6 @@
 /* Silent-Speech Notes — prototype
  *
- * Camera preview + MediaPipe Face Mesh lip-landmark visualisation.
+ * Camera preview and MediaPipe Face Landmarker lip-landmark visualisation.
  * NO lip-reading / transcription is performed here — there is no
  * recognition model in this prototype. The "Transcribe" button on each
  * clip says so explicitly.
@@ -50,6 +50,7 @@ const modelPill = document.getElementById('modelPill');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const recordBtn = document.getElementById('recordBtn');
+const recordLabel = document.getElementById('recordLabel');
 const snapshotBtn = document.getElementById('snapshotBtn');
 const switchBtn = document.getElementById('switchBtn');
 const trackStats = document.getElementById('trackStats');
@@ -59,11 +60,17 @@ const recTimer = document.getElementById('recTimer');
 const clipList = document.getElementById('clipList');
 const clipEmpty = document.getElementById('clipEmpty');
 const clipCount = document.getElementById('clipCount');
-const themeBtn = document.getElementById('themeBtn');
+const styles = getComputedStyle(document.documentElement);
+const signal = styles.getPropertyValue('--signal').trim() || '#cfe88b';
+const signalKeyline = styles.getPropertyValue('--signal-keyline').trim() || '#1c1d17';
 
 // ---------- State ----------
 let stream = null;
 let faceMesh = null;
+let trackerLoad = null;
+let trackingSession = 0;
+let sendingSession = null;
+let cameraRequestPending = false;
 let modelState = 'not-loaded'; // not-loaded | loading | loaded | failed
 let modelFailedReason = '';
 let trackingActive = false;
@@ -87,7 +94,7 @@ let clipCapNotice = '';   // cap sentence that must survive later status refresh
 const MAX_CLIPS = 12;    // bound session memory: oldest clip drops off past this
 const SMOOTH_ALPHA = 0.5; // EMA factor for lip points (0.5 = steady, still responsive)
 
-// Lip landmark index sets (MediaPipe Face Mesh, 468 landmarks).
+// Lip landmark indices in the MediaPipe face topology.
 // Outer lip contour and inner lip contour, drawn as closed polylines.
 const LIPS_OUTER = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185];
 const LIPS_INNER = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95];
@@ -100,35 +107,30 @@ function setModelState(state, reason) {
   const labels = {
     'not-loaded': 'Model: not loaded',
     'loading': 'Model: loading…',
-    'loaded': 'Model: loaded ✓',
-    'failed': 'Model: failed — face-box guide only',
+    'loaded': 'Model: loaded',
+    'failed': 'Model: failed',
   };
   modelPill.textContent = labels[state] || state;
-  modelPill.className = 'pill' + (state === 'loaded' ? ' ok' : state === 'failed' ? ' bad' : state === 'loading' ? ' warn' : '');
+  modelPill.className = 'model-state' + (state === 'loaded' ? ' ok' : state === 'failed' ? ' bad' : state === 'loading' ? ' warn' : '');
   faceGuide.hidden = state !== 'failed' || !stream;
   updateStatusLine();
 }
 
-function updateStatusLine() {
-  const cam = stream ? 'Camera on' : 'Camera off';
-  const model = {
-    'not-loaded': 'Model not loaded',
-    'loading': 'Model loading…',
-    'loaded': 'Lip tracking active',
-    'failed': 'Model failed — showing face-box guide instead',
-  }[modelState];
-  const rec = recording ? ' · ● Recording' : '';
-  statusLine.innerHTML = `Status: ${cam} · ${model}${rec}.` +
-    (modelState === 'failed' && modelFailedReason
-      ? ` <span class="warn-text">(${escapeHtml(modelFailedReason)})</span>` : '') +
-    // The clip-cap notice is a session fact, not a camera fact: once a clip
-    // was dropped to hold the cap, later refreshes (e.g. Stop camera) must
-    // not silently erase it. It clears when the next recording resolves.
-    (clipCapNotice ? ` ${clipCapNotice}` : '');
+function updateStatusLine(message) {
+  const messages = {
+    'not-loaded': 'Start the camera when you’re ready.',
+    'loading': 'Loading lip tracking. You can record while you wait.',
+    'loaded': 'Lip tracking active. Move your mouth to see the outline follow.',
+    'failed': 'Lip tracking is unavailable.',
+  };
+  const current = message || (recording ? 'Recording to this tab.' : stream ? messages[modelState] : 'Camera off. Start when you’re ready.');
+  statusLine.textContent = [current, modelState === 'failed' && modelFailedReason, clipCapNotice].filter(Boolean).join(' ');
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Recorder object URLs and file names are local values, but the clip template
+// also includes browser-formatted text. Keep interpolation safe by default.
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 }
 
 // Plain-language camera errors. The technical name goes to the console for
@@ -157,14 +159,22 @@ function defaultConstraints() {
 }
 
 async function startCamera(deviceId) {
+  if (cameraRequestPending || stream) return false;
+  cameraRequestPending = true;
+  const moveFocus = document.activeElement === startBtn;
   startBtn.disabled = true;
+  switchBtn.disabled = true;
+  updateStatusLine('Waiting for camera access…');
   const constraints = deviceId
     ? { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }
     : defaultConstraints();
   try {
     stream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (err) {
+    cameraRequestPending = false;
     startBtn.disabled = false;
+    switchBtn.disabled = false;
+    if (moveFocus) startBtn.focus();
     lastCameraError = describeCameraError(err);
     // The advice must match the cause: telling the user to allow camera
     // access when no camera exists (or the requested camera is gone) sends
@@ -188,7 +198,10 @@ async function startCamera(deviceId) {
     stream.getTracks().forEach((t) => t.stop());
     stream = null;
     video.srcObject = null;
+    cameraRequestPending = false;
     startBtn.disabled = false;
+    switchBtn.disabled = false;
+    if (moveFocus) startBtn.focus();
     lastCameraError = 'the preview could not play';
     statusLine.textContent = 'Status: camera started but the preview could not play — try again.';
     return false;
@@ -202,7 +215,7 @@ async function startCamera(deviceId) {
     if (videoTrack.addEventListener) videoTrack.addEventListener('ended', onCameraTrackEnded);
   }
   syncCurrentDeviceIndex(deviceId);
-  stageEmpty.style.display = 'none';
+  stageEmpty.hidden = true;
   stage.classList.add('live');
   cameraDot.classList.add('on');
   cameraStatusText.textContent = 'Camera on';
@@ -212,8 +225,10 @@ async function startCamera(deviceId) {
   updateResChip();
   syncOverlaySize();
 
+  cameraRequestPending = false;
+  switchBtn.disabled = false;
+  if (moveFocus) stopBtn.focus();
   initFaceMesh();
-  updateStatusLine();
   refreshCameraList(); // fire-and-forget: shows Switch camera when >1 device
   return true;
 }
@@ -227,18 +242,21 @@ function stopTracksOnly() {
 }
 
 function stopCamera() {
+  trackingSession += 1;
   trackingActive = false;
+  const moveFocus = document.activeElement === stopBtn;
   if (recording) stopRecording();
   if (modelWatchdog) { clearTimeout(modelWatchdog); modelWatchdog = null; }
   stopTracksOnly();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
-  stageEmpty.style.display = 'flex';
+  stageEmpty.hidden = false;
   stage.classList.remove('live');
   faceGuide.hidden = true;
   cameraDot.classList.remove('on', 'rec');
   cameraStatusText.textContent = 'Camera off';
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  if (moveFocus) startBtn.focus();
   recordBtn.disabled = true;
   snapshotBtn.disabled = true;
   updateResChip();
@@ -285,15 +303,22 @@ async function refreshCameraList() {
 }
 
 async function switchCamera() {
-  if (videoDevices.length < 2) return;
+  if (cameraRequestPending || videoDevices.length < 2) return;
   const next = videoDevices[(currentDeviceIndex + 1) % videoDevices.length];
   if (recording) stopRecording();
   if (stream) stopTracksOnly();
+  trackingSession += 1;
+  trackingActive = false;
+  stopBtn.disabled = true;
+  recordBtn.disabled = true;
+  snapshotBtn.disabled = true;
   // The old camera's lip points must not linger on the new camera's first
   // frames: drop the smoothed points and wipe the overlay now, before the
   // new camera's first result arrives.
   smoothedLips = null;
   resultTimes = [];
+  lastStatsAt = 0;
+  trackStats.textContent = '';
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   const ok = await startCamera(next.deviceId);
   if (!ok) {
@@ -363,41 +388,46 @@ function updateResChip() {
   resChip.hidden = false;
 }
 
-// ---------- Face Mesh lip tracking ----------
-function initFaceMesh() {
-  if (modelState === 'loaded' || modelState === 'loading') return;
-  if (typeof FaceMesh === 'undefined') {
-    setModelState('failed', 'Face Mesh script did not load from the CDN (offline or blocked).');
-    return;
-  }
+// ---------- Face Landmarker lip tracking ----------
+function loadFaceMesh() {
+  if (trackerLoad) return trackerLoad;
+  const controller = new AbortController();
+  let timeout;
+  const wait = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error('Tracking model download timed out'));
+    }, 30_000);
+  });
+
+  trackerLoad = Promise.race([
+    import('./tracker.mjs').then(module => module.createFaceTracker(onFaceResults, controller.signal)),
+    wait,
+  ]).catch(error => {
+    trackerLoad = null;
+    throw error;
+  }).finally(() => clearTimeout(timeout));
+  return trackerLoad;
+}
+
+async function initFaceMesh() {
+  const session = ++trackingSession;
   setModelState('loading');
   lastResultsAt = 0;
-  // Reuse the existing FaceMesh instance across camera restarts and retries:
-  // constructing a new one on every Start leaked an instance per cycle.
-  if (!faceMesh) {
-    try {
-      faceMesh = new FaceMesh({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-      });
-      faceMesh.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: false,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      faceMesh.onResults(onFaceResults);
-    } catch (err) {
-      trackingActive = false;
-      setModelState('failed', `Face Mesh could not start: ${err.message || err}`);
-      return;
+  lastStatsAt = 0;
+  try {
+    faceMesh = await loadFaceMesh();
+    if (session !== trackingSession || !stream) return;
+  } catch (error) {
+    if (session === trackingSession && stream) {
+      console.warn('[silent-speech] model load error:', error);
+      setModelState('failed', 'The tracking model did not load from the CDN. Check your connection and restart the camera to retry.');
     }
+    return;
   }
   trackingActive = true;
-  // Watchdog: if the model never produces a result, say so instead of spinning
-  // forever. 30s, not 20s — model weights over a slow mobile connection can
-  // legitimately take longer than 20s, and a retry on the next Start is cheap.
   armModelWatchdog();
-  requestAnimationFrame(trackLoop);
+  requestAnimationFrame(() => trackLoop(session));
 }
 
 function armModelWatchdog() {
@@ -416,24 +446,30 @@ function armModelWatchdog() {
   }, 30000);
 }
 
-async function trackLoop() {
-  if (!trackingActive || !stream) return;
-  if (video.readyState >= 2 && faceMesh) {
+async function trackLoop(session) {
+  if (!trackingActive || !stream || session !== trackingSession) return;
+  // MediaPipe processes one frame at a time, even across a camera restart.
+  if (video.readyState >= 2 && sendingSession === null) {
+    sendingSession = session;
     try {
       await faceMesh.send({ image: video });
-    } catch (err) {
-      trackingActive = false;
-      setModelState('failed', `Tracking error: ${err.message || err}`);
-      return;
+    } catch (error) {
+      if (session === trackingSession) {
+        trackingActive = false;
+        console.warn('[silent-speech] tracking error:', error);
+        setModelState('failed', 'Restart the camera to retry tracking.');
+      }
+    } finally {
+      sendingSession = null;
     }
   }
-  if (trackingActive) requestAnimationFrame(trackLoop);
+  if (trackingActive && session === trackingSession) requestAnimationFrame(() => trackLoop(session));
 }
 
 function onFaceResults(results) {
   // A result can arrive after Stop (an in-flight send resolving late) —
   // never draw it or flip the model state back to "loaded" then.
-  if (!trackingActive || !stream) return;
+  if (!trackingActive || !stream || (sendingSession !== null && sendingSession !== trackingSession)) return;
   lastResultsAt = Date.now();
   // Sample every result for the fps readout, before any throttling: the
   // stats line only repaints at ~4 Hz, but the samples are per-frame, so the
@@ -449,9 +485,6 @@ function onFaceResults(results) {
   const faces = results && results.multiFaceLandmarks;
   if (!faces || faces.length === 0) {
     smoothedLips = null; // a new face must not drag points from the old one
-    ctx.fillStyle = 'rgba(232, 236, 241, 0.85)';
-    ctx.font = `${Math.round(overlay.height * 0.035)}px system-ui, sans-serif`;
-    ctx.fillText('No face detected — move into frame', 16, 32);
     updateTrackStats(null);
     return;
   }
@@ -500,15 +533,10 @@ function drawLips(landmarks) {
     .map(([x, y]) => [x * w, y * h])
     .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
 
-  // Lip landmark points (skip any index the model did not supply).
-  ctx.fillStyle = '#4f8cff';
-  for (const [x, y] of toPx(smooth)) {
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(2, w * 0.004), 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Lip outlines.
+  // A dark keyline keeps the signal readable over light camera footage.
+  const outline = toPx(smooth.slice(0, 20));
+  const opening = toPx(smooth.slice(20));
+  const stroke = Math.max(1, w * 0.0015);
   const drawPolyline = (points, color, width) => {
     if (points.length < 2) return;
     ctx.strokeStyle = color;
@@ -519,8 +547,20 @@ function drawLips(landmarks) {
     ctx.closePath();
     ctx.stroke();
   };
-  drawPolyline(toPx(smooth.slice(0, 20)), '#4f8cff', Math.max(2, w * 0.004));
-  drawPolyline(toPx(smooth.slice(20)), '#7fd0ff', Math.max(1.5, w * 0.003));
+  for (const points of [outline, opening]) {
+    drawPolyline(points, signalKeyline, stroke + 2);
+    drawPolyline(points, signal, stroke);
+  }
+
+  ctx.fillStyle = signal;
+  ctx.strokeStyle = signalKeyline;
+  ctx.lineWidth = 1;
+  for (const [x, y] of [...outline, ...opening]) {
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1.5, w * 0.0022), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
 }
 
 // Live tracking readout: frames per second plus lip aperture — the vertical
@@ -534,7 +574,7 @@ function updateTrackStats(landmarks) {
     // A face leaving the frame is a state change, not a repaint — show it at
     // once instead of waiting out the throttle below.
     lastStatsAt = now;
-    trackStats.textContent = 'Tracking · no face in frame';
+    trackStats.textContent = 'Tracking · no face in frame. Move into view.';
     return;
   }
   if (now - lastStatsAt < 250) return; // throttle DOM writes to ~4 Hz
@@ -587,7 +627,7 @@ function startRecording() {
   if (!stream || recording) return;
   clipCapNotice = ''; // a new recording supersedes the old cap notice
   if (!window.MediaRecorder) {
-    statusLine.textContent = 'Status: MediaRecorder is not supported in this browser — recording unavailable.';
+    updateStatusLine('Recording is unavailable in this browser. You can still take a snapshot.');
     return;
   }
   // Session-scoped state, captured in this closure: stopping this clip and
@@ -597,18 +637,18 @@ function startRecording() {
   let recorder;
   try {
     recorder = new MediaRecorder(stream, { mimeType: pickMimeType() || undefined });
+    recorder.ondataavailable = ({ data }) => { if (data && data.size) chunks.push(data); };
+    recorder.onstop = () => onRecordingStopped(chunks, recorder.mimeType, startedAt);
+    recorder.start(250);
   } catch (err) {
-    statusLine.textContent = `Status: could not start recording — ${err.message || err}`;
+    console.warn('[silent-speech] recording error:', err);
+    updateStatusLine('Could not start recording. Try again.');
     return;
   }
-  const mimeType = recorder.mimeType;
-  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-  recorder.onstop = () => onRecordingStopped(chunks, mimeType, startedAt);
-  recorder.start(250);
   mediaRecorder = recorder;
   recording = true;
   recordStartedAt = startedAt;
-  recordBtn.textContent = '■ Stop recording';
+  recordLabel.textContent = 'Stop recording';
   recordBtn.classList.add('recording');
   recordBtn.setAttribute('aria-pressed', 'true');
   cameraDot.classList.add('rec');
@@ -619,8 +659,9 @@ function startRecording() {
 
 function stopRecording() {
   const recorder = mediaRecorder;
+  mediaRecorder = null;
   recording = false;
-  recordBtn.textContent = '● Record clip';
+  recordLabel.textContent = 'Record clip';
   recordBtn.classList.remove('recording');
   recordBtn.setAttribute('aria-pressed', 'false');
   cameraDot.classList.remove('rec');
@@ -637,10 +678,10 @@ function onRecordingStopped(chunks, mimeType, startedAt) {
   const durationSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
   const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
   if (!blob.size) {
-    statusLine.textContent = 'Status: recording produced no data — clip discarded.';
+    updateStatusLine('The recording was empty. Try recording a few seconds longer.');
     return;
   }
-  const pruned = addClip(URL.createObjectURL(blob), durationSec, blob.size);
+  const pruned = addClip(URL.createObjectURL(blob), durationSec, blob.size, blob.type);
   if (pruned > 0) {
     // The cap notice is about the clip list, not the camera: it must show
     // even when the camera is already off (recording stopped by Stop camera,
@@ -648,14 +689,14 @@ function onRecordingStopped(chunks, mimeType, startedAt) {
     // later status refreshes — so it is kept in clipCapNotice and re-shown
     // by updateStatusLine until the next recording resolves.
     clipCapNotice = `Oldest clip removed to keep the latest ${MAX_CLIPS}.`;
-    statusLine.textContent = `Status: clip saved — oldest clip removed to keep the latest ${MAX_CLIPS}.`;
+    updateStatusLine('Clip saved in this tab.');
   } else {
     clipCapNotice = '';
-    updateStatusLine();
+    updateStatusLine('Clip saved in this tab.');
   }
 }
 
-function addClip(url, durationSec, sizeBytes) {
+function addClip(url, durationSec, sizeBytes, mimeType) {
   clipSeq += 1;
   const n = clipSeq;
   clipTotal += 1;
@@ -664,34 +705,42 @@ function addClip(url, durationSec, sizeBytes) {
 
   const li = document.createElement('li');
   li.className = 'clip';
-  const stamp = new Date().toLocaleTimeString();
+  const stamp = new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const sizeKb = Math.max(1, Math.round(sizeBytes / 1024));
+  const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+  const noteId = `clip-note-${n}`;
 
   li.innerHTML = `
-    <video controls playsinline src="${escapeHtml(url)}"></video>
+    <video controls playsinline preload="metadata" aria-label="Play clip ${n}" src="${escapeHtml(url)}"></video>
     <div class="clip-meta">
-      <span>Clip ${n} · ${escapeHtml(stamp)}</span>
-      <span>${durationSec}s · ${sizeKb} KB</span>
+      <strong>Clip ${n}</strong>
+      <span class="clip-details">${escapeHtml(stamp)} · ${formatElapsed(durationSec * 1000)} · ${sizeKb} KB</span>
     </div>
     <div class="clip-actions">
-      <button class="btn transcribe-btn" type="button">Transcribe</button>
-      <a class="btn download-btn" href="${escapeHtml(url)}" download="silent-speech-clip-${n}.webm">Download</a>
-      <button class="btn delete-btn" type="button">Delete</button>
+      <button class="button transcribe-btn" type="button" aria-controls="${noteId}">Transcribe</button>
+      <a class="button download-btn" href="${escapeHtml(url)}" download="silent-speech-clip-${n}.${extension}">Download</a>
+      <button class="button delete-btn" type="button">Delete</button>
     </div>
-    <p class="clip-note"></p>`;
+    <p class="clip-note" id="${noteId}" role="status" hidden></p>`;
 
-  li.querySelector('.transcribe-btn').addEventListener('click', (e) => {
-    const note = li.querySelector('.clip-note');
-    note.textContent = 'Transcription is not available in this prototype — true lip-reading ' +
-      'needs a dedicated trained model, which is not included. No transcript was generated.';
-    e.currentTarget.disabled = true;
+  const transcribe = li.querySelector('.transcribe-btn');
+  const note = li.querySelector('.clip-note');
+  transcribe.addEventListener('click', () => {
+    note.hidden = false;
+    note.textContent = 'Transcription is not available in this prototype.';
+    transcribe.disabled = true;
+    li.querySelector('.download-btn').focus();
   });
-  li.querySelector('.delete-btn').addEventListener('click', () => {
+  const remove = li.querySelector('.delete-btn');
+  remove.addEventListener('click', () => {
+    const moveFocus = document.activeElement === remove;
+    const next = li.nextElementSibling || li.previousElementSibling;
     URL.revokeObjectURL(url);
     li.remove();
     clipTotal -= 1;
     clipCount.textContent = `${clipTotal} clip${clipTotal === 1 ? '' : 's'}`;
     if (clipTotal === 0) clipList.appendChild(clipEmpty);
+    if (moveFocus) (next?.querySelector('.delete-btn') || (recordBtn.disabled ? startBtn : recordBtn)).focus();
   });
 
   clipList.prepend(li);
@@ -735,24 +784,11 @@ function takeSnapshot() {
   a.download = `silent-speech-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
   a.click();
   // Confirm briefly, then restore the normal status line.
-  statusLine.textContent = 'Status: snapshot saved — check your downloads folder.';
-  setTimeout(updateStatusLine, 3000);
-}
-
-// ---------- Theme ----------
-// The <head> script already applied the stored/OS theme before first paint;
-// this only wires the toggle and keeps its label in sync. localStorage is
-// guarded: private mode must not break the page.
-function setTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem('ssn-theme', theme); } catch (e) { /* private mode */ }
-  if (themeBtn) themeBtn.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
-}
-if (themeBtn) {
-  themeBtn.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? 'Dark mode' : 'Light mode';
-  themeBtn.addEventListener('click', () => {
-    setTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
-  });
+  updateStatusLine('Your snapshot saved to Downloads.');
+  const confirmation = statusLine.textContent;
+  setTimeout(() => {
+    if (statusLine.textContent === confirmation) updateStatusLine();
+  }, 3000);
 }
 
 // ---------- Wiring ----------
@@ -768,12 +804,3 @@ video.addEventListener('loadedmetadata', () => { syncOverlaySize(); updateResChi
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && modelState === 'loading' && !lastResultsAt) armModelWatchdog();
 });
-
-// If the CDN script itself failed to load, say so as soon as the page is ready.
-window.addEventListener('load', () => {
-  if (typeof FaceMesh === 'undefined') {
-    setModelState('failed', 'Face Mesh script did not load from the CDN (offline or blocked).');
-  }
-  updateStatusLine();
-});
-updateStatusLine();
