@@ -68,8 +68,10 @@ async function makePage(opts = {}) {
   // resources, so the test needs no server — and so computed-style checks
   // (e.g. [hidden] actually hiding an element) test the real CSS.
   const html = htmlRaw
+    .replace(/<script src="(note-store|notebook)\.js"><\/script>/g, (_, name) => `<script>${fs.readFileSync(path.join(ROOT, name + '.js'), 'utf8')}</script>`)
     .replace('<script src="theme.js"></script>', () => `<script>${themeJs}</script>`)
     .replace(/<link[^>]*>/g, '<!-- link stripped for tests -->')
+    .replace('src="assets/mark.svg"', '')
     .replace(/<script src="app\.js"><\/script>/, () => `<script>${appJs}</script>`)
     .replace('</head>', () => `<style>${css}</style></head>`);
 
@@ -379,6 +381,35 @@ async function testRecordingFlow() {
   check('empty-clips message returns', !!q('#clipEmpty'));
   check('no JS errors', errors.length === 0, JSON.stringify(errors));
   page.window.close();
+}
+
+async function testRecordingLimitAndFailure() {
+  console.log('recording limit and recorder recovery');
+  const page = await makePage();
+  const { window, q, errors } = page;
+  q('#startBtn').click();
+  await sleep(300);
+
+  const now = window.performance.now.bind(window.performance);
+  let offset = 0;
+  window.performance.now = () => now() + offset;
+  q('#recordBtn').click();
+  check('recording displays its progress rule', !q('#recordMeter').hidden);
+  offset = 60_001;
+  await sleep(300);
+  check('limit ends the recording and keeps the clip',
+    q('#recordBtn').getAttribute('aria-pressed') === 'false' &&
+    q('#recordMeter').hidden && q('#clipCount').textContent === '1 clip' &&
+    q('#statusLine').textContent.includes('One-minute limit reached'));
+  q('#recordBtn').click();
+  window.__recorders.at(-1).onerror();
+  window.__recorders.at(-1).stop();
+  check('recorder error resets controls without adding a damaged clip',
+    q('#recordBtn').getAttribute('aria-pressed') === 'false' &&
+    q('#clipCount').textContent === '1 clip' &&
+    q('#statusLine').textContent.includes('Recording stopped before the clip could be saved'));
+  check('no JS errors', errors.length === 0, JSON.stringify(errors));
+  window.close();
 }
 
 async function testSnapshot() {
@@ -815,6 +846,7 @@ async function main() {
   await testStopWhileLoading();
   await testLateResultIgnored();
   await testRecordingFlow();
+  await testRecordingLimitAndFailure();
   await testSnapshot();
   await testTrackEnded();
   await testCameraDenied();

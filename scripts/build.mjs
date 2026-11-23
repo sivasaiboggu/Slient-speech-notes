@@ -5,10 +5,10 @@ import { execFileSync } from 'node:child_process';
 const root = new URL('../', import.meta.url);
 const dist = new URL('dist/', root);
 const pages = ['index.html', 'privacy.html', '404.html'];
-const scripts = ['theme.js', 'app.js', 'tracker.mjs'];
+const scripts = ['theme.js', 'app.js', 'note-store.js', 'notebook.js', 'tracker.mjs'];
 const assets = [
-  'grain.png', 'icon-192.png', 'icon-512.png', 'instrument-sans-latin.woff2',
-  'instrument-sans-OFL.txt', 'mark.svg', 'social.png',
+  'grain.png', 'icon-192.png', 'icon-512.png', 'alegreya-sans-latin-400.woff2',
+  'alegreya-sans-latin-700.woff2', 'alegreya-sans-OFL.txt', 'mark.svg', 'social.png',
 ];
 const files = [
   ...pages, ...scripts, ...assets.map(asset => 'assets/' + asset),
