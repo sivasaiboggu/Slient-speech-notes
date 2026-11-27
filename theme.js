@@ -12,7 +12,7 @@
 
   function applyTheme() {
     root.dataset.theme = theme;
-    browserColor.content = theme === 'dark' ? '#1c1d17' : '#f4f2e9';
+    browserColor.content = theme === 'dark' ? '#251d1a' : '#f6eee1';
   }
 
   applyTheme();

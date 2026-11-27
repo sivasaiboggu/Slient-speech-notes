@@ -1,38 +1,4 @@
-/* Silent-Speech Notes — prototype
- *
- * Camera preview and MediaPipe Face Landmarker lip-landmark visualisation.
- * NO lip-reading / transcription is performed here — there is no
- * recognition model in this prototype. The "Transcribe" button on each
- * clip says so explicitly.
- *
- * Design notes (senior pass, 21 Nov 2026):
- * - One overlay-sizing path: the canvas backing always matches the video
- *   frame, so landmarks map 1:1. No CSS-size/DPR sizing anywhere.
- * - Lip points are temporally smoothed (EMA) — raw per-frame landmarks
- *   jitter visibly; smoothing is what makes the overlay look tracked. A
- *   point missing on the first frame seeds NaN, so a non-finite stored
- *   point snaps to the new one instead of staying NaN forever.
- * - The fps readout samples every tracking result; the stats line only
- *   repaints at ~4 Hz, so the number is the real frame rate, not the
- *   repaint rate. A face leaving the frame updates the line at once.
- * - Recording is session-scoped: each recording owns its chunks, mime
- *   type and start time in a closure, so stopping one clip and starting
- *   the next immediately cannot mix the two up.
- * - Camera errors are translated to plain language; the technical name
- *   goes to the console, never to the user.
- * - The model watchdog never fires while the tab is hidden (rAF is
- *   paused there, so "no results yet" says nothing about the model).
- * - The camera-switch index is re-synced once enumerateDevices returns
- *   the real list, so Switch always moves to a different camera.
- * - Hidden HUD elements stay hidden: [hidden] beats the display rules
- *   in CSS (see style.css), so the face-box guide, res chip and REC chip
- *   never show while they should not.
- * - Round 10 (22 Nov 2026): Switch camera clears the old camera's lip
- *   points and works after Stop; unknown camera errors no longer blame
- *   permission; the clip-cap notice survives Stop (kept in clipCapNotice
- *   and re-shown by updateStatusLine); hero copy says 40 lip landmarks,
- *   the number actually drawn.
- */
+/* Camera lifecycle, live lip landmarks, silent recording and snapshots. */
 
 'use strict';
 
@@ -57,12 +23,12 @@ const trackStats = document.getElementById('trackStats');
 const resChip = document.getElementById('resChip');
 const recHud = document.getElementById('recHud');
 const recTimer = document.getElementById('recTimer');
-const clipList = document.getElementById('clipList');
-const clipEmpty = document.getElementById('clipEmpty');
-const clipCount = document.getElementById('clipCount');
+const recordMeter = document.getElementById('recordMeter');
+const meterFill = recordMeter.firstElementChild;
+const notebook = window.createNotebook(() => (recordBtn.disabled ? startBtn : recordBtn));
 const styles = getComputedStyle(document.documentElement);
-const signal = styles.getPropertyValue('--signal').trim() || '#cfe88b';
-const signalKeyline = styles.getPropertyValue('--signal-keyline').trim() || '#1c1d17';
+const signal = styles.getPropertyValue('--signal').trim() || '#ff837e';
+const signalKeyline = styles.getPropertyValue('--signal-keyline').trim() || '#211719';
 
 // ---------- State ----------
 let stream = null;
@@ -76,12 +42,8 @@ let modelFailedReason = '';
 let trackingActive = false;
 let lastResultsAt = 0;
 let modelWatchdog = null;
-let mediaRecorder = null;
-let recording = false;
-let recordStartedAt = 0;
+let activeCapture = null;
 let recordTimerId = null;
-let clipTotal = 0; // clips currently listed
-let clipSeq = 0;   // monotonic clip number (never reused, survives deletes)
 let currentDeviceId = null;
 let currentDeviceIndex = 0;
 let videoDevices = [];
@@ -91,7 +53,7 @@ let lastStatsAt = 0;
 let lastCameraError = ''; // plain-language reason from the last failed camera start
 let clipCapNotice = '';   // cap sentence that must survive later status refreshes
 
-const MAX_CLIPS = 12;    // bound session memory: oldest clip drops off past this
+const RECORD_LIMIT_MS = 60_000;
 const SMOOTH_ALPHA = 0.5; // EMA factor for lip points (0.5 = steady, still responsive)
 
 // Lip landmark indices in the MediaPipe face topology.
@@ -112,7 +74,7 @@ function setModelState(state, reason) {
   };
   modelPill.textContent = labels[state] || state;
   modelPill.className = 'model-state' + (state === 'loaded' ? ' ok' : state === 'failed' ? ' bad' : state === 'loading' ? ' warn' : '');
-  faceGuide.hidden = state !== 'failed' || !stream;
+  faceGuide.hidden = !stream || (state !== 'failed' && state !== 'loading');
   updateStatusLine();
 }
 
@@ -123,14 +85,8 @@ function updateStatusLine(message) {
     'loaded': 'Lip tracking active. Move your mouth to see the outline follow.',
     'failed': 'Lip tracking is unavailable.',
   };
-  const current = message || (recording ? 'Recording to this tab.' : stream ? messages[modelState] : 'Camera off. Start when you’re ready.');
+  const current = message || (activeCapture ? 'Recording video only. Clips stop at one minute.' : stream ? messages[modelState] : 'Camera off. Start when you’re ready.');
   statusLine.textContent = [current, modelState === 'failed' && modelFailedReason, clipCapNotice].filter(Boolean).join(' ');
-}
-
-// Recorder object URLs and file names are local values, but the clip template
-// also includes browser-formatted text. Keep interpolation safe by default.
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 }
 
 // Plain-language camera errors. The technical name goes to the console for
@@ -245,7 +201,7 @@ function stopCamera() {
   trackingSession += 1;
   trackingActive = false;
   const moveFocus = document.activeElement === stopBtn;
-  if (recording) stopRecording();
+  if (activeCapture) stopRecording();
   if (modelWatchdog) { clearTimeout(modelWatchdog); modelWatchdog = null; }
   stopTracksOnly();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
@@ -305,7 +261,7 @@ async function refreshCameraList() {
 async function switchCamera() {
   if (cameraRequestPending || videoDevices.length < 2) return;
   const next = videoDevices[(currentDeviceIndex + 1) % videoDevices.length];
-  if (recording) stopRecording();
+  if (activeCapture) stopRecording();
   if (stream) stopTracksOnly();
   trackingSession += 1;
   trackingActive = false;
@@ -598,8 +554,7 @@ function updateTrackStats(landmarks) {
 // ---------- Recording ----------
 function pickMimeType() {
   const candidates = [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9',
     'video/webm;codecs=vp8',
     'video/webm',
     'video/mp4',
@@ -612,160 +567,104 @@ function formatElapsed(ms) {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function startRecordTimer() {
+function startRecordTimer(capture) {
   stopRecordTimer();
-  const tick = () => { if (recTimer) recTimer.textContent = formatElapsed(Date.now() - recordStartedAt); };
+  const tick = () => {
+    const elapsed = Math.min(performance.now() - capture.started, RECORD_LIMIT_MS);
+    recTimer.textContent = formatElapsed(elapsed);
+    meterFill.style.transform = `scaleX(${elapsed / RECORD_LIMIT_MS})`;
+    if (elapsed >= RECORD_LIMIT_MS) stopRecording(true);
+  };
   tick();
-  recordTimerId = setInterval(tick, 500);
+  recordTimerId = setInterval(tick, 200);
 }
 
 function stopRecordTimer() {
-  if (recordTimerId) { clearInterval(recordTimerId); recordTimerId = null; }
+  if (recordTimerId) clearInterval(recordTimerId);
+  recordTimerId = null;
 }
 
 function startRecording() {
-  if (!stream || recording) return;
-  clipCapNotice = ''; // a new recording supersedes the old cap notice
+  if (!stream || activeCapture) return;
+  clipCapNotice = '';
   if (!window.MediaRecorder) {
     updateStatusLine('Recording is unavailable in this browser. You can still take a snapshot.');
     return;
   }
-  // Session-scoped state, captured in this closure: stopping this clip and
-  // starting the next one immediately cannot mix the two recordings up.
+
+  // Each recorder owns its final chunks even if the next take starts first.
   const chunks = [];
-  const startedAt = Date.now();
-  let recorder;
+  let capture;
   try {
-    recorder = new MediaRecorder(stream, { mimeType: pickMimeType() || undefined });
-    recorder.ondataavailable = ({ data }) => { if (data && data.size) chunks.push(data); };
-    recorder.onstop = () => onRecordingStopped(chunks, recorder.mimeType, startedAt);
+    const recorder = new MediaRecorder(stream, {
+      mimeType: pickMimeType() || undefined,
+      videoBitsPerSecond: 2_500_000,
+    });
+    capture = { recorder, capturedAt: Date.now(), started: performance.now() };
+    recorder.ondataavailable = ({ data }) => {
+      if (data?.size) chunks.push(data);
+      if (activeCapture === capture && performance.now() - capture.started >= RECORD_LIMIT_MS) stopRecording(true);
+    };
+    recorder.onerror = () => {
+      capture.failed = true;
+      if (activeCapture === capture) resetRecording();
+      if (!activeCapture) updateStatusLine('Recording stopped before the clip could be saved. Try again.');
+    };
+    recorder.onstop = () => finishRecording(capture, chunks);
     recorder.start(250);
   } catch (err) {
     console.warn('[silent-speech] recording error:', err);
     updateStatusLine('Could not start recording. Try again.');
     return;
   }
-  mediaRecorder = recorder;
-  recording = true;
-  recordStartedAt = startedAt;
+
+  activeCapture = capture;
   recordLabel.textContent = 'Stop recording';
   recordBtn.classList.add('recording');
   recordBtn.setAttribute('aria-pressed', 'true');
   cameraDot.classList.add('rec');
-  if (recHud) recHud.hidden = false;
-  startRecordTimer();
+  recHud.hidden = false;
+  recordMeter.hidden = false;
+  startRecordTimer(capture);
   updateStatusLine();
 }
 
-function stopRecording() {
-  const recorder = mediaRecorder;
-  mediaRecorder = null;
-  recording = false;
+function finishRecording(capture, chunks) {
+  if (activeCapture === capture) resetRecording();
+  if (capture.failed) return;
+  const blob = new Blob(chunks, { type: capture.recorder.mimeType || chunks[0]?.type || 'video/webm' });
+  if (!blob.size) {
+    if (!activeCapture) updateStatusLine('The recording was empty. Try recording a few seconds longer.');
+    return;
+  }
+
+  const durationMs = capture.durationMs ?? performance.now() - capture.started;
+  const wasPruned = notebook.addRecording({ blob, capturedAt: capture.capturedAt, durationMs });
+  clipCapNotice = wasPruned ? `Oldest clip removed to keep the latest ${notebook.limit} unsaved clips.` : '';
+  if (!activeCapture) updateStatusLine(capture.reachedLimit
+    ? 'One-minute limit reached. Clip saved in this tab.'
+    : 'Clip saved in this tab.');
+}
+
+function resetRecording() {
+  activeCapture = null;
   recordLabel.textContent = 'Record clip';
   recordBtn.classList.remove('recording');
   recordBtn.setAttribute('aria-pressed', 'false');
   cameraDot.classList.remove('rec');
-  if (recHud) recHud.hidden = true;
+  recHud.hidden = true;
+  recordMeter.hidden = true;
   stopRecordTimer();
-  updateStatusLine();
-  // Stop last: onstop fires after this (async in browsers, synchronous in
-  // some test fakes) and writes its own status — clip saved, cap notice, or
-  // "no data" — which must be the message that sticks, not the refresh above.
-  if (recorder && recorder.state !== 'inactive') recorder.stop();
 }
 
-function onRecordingStopped(chunks, mimeType, startedAt) {
-  const durationSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-  const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
-  if (!blob.size) {
-    updateStatusLine('The recording was empty. Try recording a few seconds longer.');
-    return;
-  }
-  const pruned = addClip(URL.createObjectURL(blob), durationSec, blob.size, blob.type);
-  if (pruned > 0) {
-    // The cap notice is about the clip list, not the camera: it must show
-    // even when the camera is already off (recording stopped by Stop camera,
-    // whose onstop fires after the tracks are gone), and it must survive
-    // later status refreshes — so it is kept in clipCapNotice and re-shown
-    // by updateStatusLine until the next recording resolves.
-    clipCapNotice = `Oldest clip removed to keep the latest ${MAX_CLIPS}.`;
-    updateStatusLine('Clip saved in this tab.');
-  } else {
-    clipCapNotice = '';
-    updateStatusLine('Clip saved in this tab.');
-  }
-}
-
-function addClip(url, durationSec, sizeBytes, mimeType) {
-  clipSeq += 1;
-  const n = clipSeq;
-  clipTotal += 1;
-  if (clipEmpty) clipEmpty.remove();
-  clipCount.textContent = `${clipTotal} clip${clipTotal === 1 ? '' : 's'}`;
-
-  const li = document.createElement('li');
-  li.className = 'clip';
-  const stamp = new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  const sizeKb = Math.max(1, Math.round(sizeBytes / 1024));
-  const extension = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
-  const noteId = `clip-note-${n}`;
-
-  li.innerHTML = `
-    <video controls playsinline preload="metadata" aria-label="Play clip ${n}" src="${escapeHtml(url)}"></video>
-    <div class="clip-meta">
-      <strong>Clip ${n}</strong>
-      <span class="clip-details">${escapeHtml(stamp)} · ${formatElapsed(durationSec * 1000)} · ${sizeKb} KB</span>
-    </div>
-    <div class="clip-actions">
-      <button class="button transcribe-btn" type="button" aria-controls="${noteId}">Transcribe</button>
-      <a class="button download-btn" href="${escapeHtml(url)}" download="silent-speech-clip-${n}.${extension}">Download</a>
-      <button class="button delete-btn" type="button">Delete</button>
-    </div>
-    <p class="clip-note" id="${noteId}" role="status" hidden></p>`;
-
-  const transcribe = li.querySelector('.transcribe-btn');
-  const note = li.querySelector('.clip-note');
-  transcribe.addEventListener('click', () => {
-    note.hidden = false;
-    note.textContent = 'Transcription is not available in this prototype.';
-    transcribe.disabled = true;
-    li.querySelector('.download-btn').focus();
-  });
-  const remove = li.querySelector('.delete-btn');
-  remove.addEventListener('click', () => {
-    const moveFocus = document.activeElement === remove;
-    const next = li.nextElementSibling || li.previousElementSibling;
-    URL.revokeObjectURL(url);
-    li.remove();
-    clipTotal -= 1;
-    clipCount.textContent = `${clipTotal} clip${clipTotal === 1 ? '' : 's'}`;
-    if (clipTotal === 0) clipList.appendChild(clipEmpty);
-    if (moveFocus) (next?.querySelector('.delete-btn') || (recordBtn.disabled ? startBtn : recordBtn)).focus();
-  });
-
-  clipList.prepend(li);
-  return pruneClips();
-}
-
-// Clips live in memory as object URLs, so the list is capped — past the cap
-// the oldest clip is dropped (and its URL revoked) instead of growing the
-// session without bound. Returns how many were dropped, so the caller can
-// say so in the status line (pruneClips itself must not write there — its
-// message would be overwritten by the caller's status refresh).
-function pruneClips() {
-  const clips = clipList.querySelectorAll('.clip');
-  if (clips.length <= MAX_CLIPS) return 0;
-  let removed = 0;
-  for (let i = clips.length - 1; i >= MAX_CLIPS; i -= 1) {
-    const old = clips[i];
-    const v = old.querySelector('video');
-    if (v && v.src) URL.revokeObjectURL(v.src);
-    old.remove();
-    clipTotal -= 1;
-    removed += 1;
-  }
-  clipCount.textContent = `${clipTotal} clip${clipTotal === 1 ? '' : 's'}`;
-  return removed;
+function stopRecording(reachedLimit = false) {
+  const capture = activeCapture;
+  if (!capture) return;
+  capture.durationMs = performance.now() - capture.started;
+  capture.reachedLimit = reachedLimit;
+  resetRecording();
+  updateStatusLine('Finishing the clip…');
+  if (capture.recorder.state !== 'inactive') capture.recorder.stop();
 }
 
 // ---------- Snapshot ----------
@@ -794,7 +693,7 @@ function takeSnapshot() {
 // ---------- Wiring ----------
 startBtn.addEventListener('click', () => startCamera());
 stopBtn.addEventListener('click', stopCamera);
-recordBtn.addEventListener('click', () => (recording ? stopRecording() : startRecording()));
+recordBtn.addEventListener('click', () => (activeCapture ? stopRecording() : startRecording()));
 snapshotBtn.addEventListener('click', takeSnapshot);
 if (switchBtn) switchBtn.addEventListener('click', switchCamera);
 video.addEventListener('loadedmetadata', () => { syncOverlaySize(); updateResChip(); });

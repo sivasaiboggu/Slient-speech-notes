@@ -5,20 +5,20 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/ 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/ https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="See 40 lip landmarks move with your camera. Record short clips and save snapshots in your browser.">
+  <meta name="description" content="Track lip movement, record silent clips and keep video notes in your browser.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Silent-Speech Notes">
-  <meta property="og:description" content="A camera workspace for watching lip movement and saving clips locally.">
+  <meta property="og:description" content="A camera notebook for recording silent clips and keeping notes on this device.">
   <meta property="og:image" content="https://sivasaiboggu.github.io/Slient-speech-notes/assets/social.png">
-  <meta property="og:image:alt" content="Silent-Speech Notes with a diagram of 40 lip landmarks in the viewfinder">
+  <meta property="og:image:alt" content="Silent-Speech Notes with a lip-red framing guide on warm paper">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta name="theme-color" content="#f4f2e9">
+  <meta name="theme-color" content="#f6eee1">
   <title>Silent-Speech Notes</title>
   <script src="theme.js"></script>
   <link rel="icon" href="assets/mark.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="preload" href="assets/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/alegreya-sans-latin-700.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -27,16 +27,12 @@
   <header class="site-header">
     <div class="shell masthead">
       <a class="brand" href="./">
-        <svg viewBox="0 0 40 30" width="36" height="28" fill="none" aria-hidden="true">
-          <path d="M2 16c7-1 11-10 18-5 7-5 11 4 18 5-7 7-13 10-18 10S9 23 2 16Z" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M2 16c8 1 12-2 18-1 6-1 10 2 18 1" stroke="currentColor" stroke-width="1.5"/>
-          <circle cx="2" cy="16" r="1.5" fill="currentColor"/><circle cx="38" cy="16" r="1.5" fill="currentColor"/>
-        </svg>
+        <img src="assets/mark.svg" width="32" height="32" alt="">
         <span>Silent-Speech Notes</span>
       </a>
       <nav aria-label="On this page">
         <a href="#cameraCard">Camera</a>
-        <a href="#clips">Clips</a>
+        <a href="#clips">Notebook</a>
         <a href="#howCard">Guide</a>
       </nav>
       <button class="button theme-button" id="themeBtn" type="button">Dark mode</button>
@@ -44,18 +40,15 @@
   </header>
 
   <main class="shell">
-    <section class="intro" aria-labelledby="page-title">
-      <div>
-        <p class="label intro-label">Camera prototype</p>
-        <h1 id="page-title">See your lips<br class="title-break"> in motion.</h1>
-      </div>
-      <div class="intro-copy">
-        <p>Watch 40 lip landmarks follow your mouth as you move. Record a clip or save a still. Your video stays in this browser tab.</p>
-        <p class="scope-note">Transcription is unavailable in this prototype.</p>
-      </div>
-    </section>
-
     <div class="workspace">
+      <section class="intro" aria-labelledby="page-title">
+        <h1 id="page-title">Record a silent take.</h1>
+        <div class="intro-copy">
+          <p>Watch 40 lip landmarks follow your mouth. Record a short clip and write down what you want to remember.</p>
+          <p class="scope-note">Transcription is unavailable.</p>
+        </div>
+      </section>
+
       <section class="camera" id="cameraCard" aria-labelledby="camera-title" tabindex="-1">
         <div class="section-head">
           <h2 id="camera-title">Viewfinder</h2>
@@ -65,23 +58,25 @@
         <div class="stage" id="stage" role="region" aria-label="Camera preview">
           <video id="video" autoplay muted playsinline aria-label="Live camera feed"></video>
           <canvas id="overlay" aria-hidden="true"></canvas>
-          <span class="hud hud-live" aria-hidden="true"><span class="hud-dot"></span>Live</span>
+          <span class="hud hud-live" aria-hidden="true"><span class="hud-dot"></span>Live preview</span>
           <span class="hud hud-res" id="resChip" hidden></span>
-          <span class="hud hud-rec" id="recHud" hidden><span class="hud-dot"></span>Rec <span id="recTimer">00:00</span></span>
+          <span class="hud hud-rec" id="recHud" hidden><span class="hud-dot"></span>REC <span id="recTimer">00:00</span></span>
+          <div class="record-meter" id="recordMeter" hidden aria-hidden="true"><span></span></div>
           <div class="stage-empty" id="stageEmpty">
-            <p class="label stage-label">Reference contour</p>
-            <div class="viewfinder-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <p class="label stage-label">Framing guide</p>
             <div class="reference">
-              <svg class="contour" viewBox="0 0 400 144" fill="none" aria-hidden="true">
-                <!-- 20 points per contour, matching the count in the live drawing. -->
-                <path class="crosshairs" d="M0 72h400M200 0v144"/>
-                <polygon class="contour-line" points="18,76 37,64 61,49 92,32 119,21 147,17 173,26 200,35 227,26 253,17 281,21 308,32 339,49 363,64 382,76 343,95 280,117 200,127 120,117 57,95"/>
-                <polygon class="contour-line contour-inner" points="42,76 63,73 88,67 111,60 140,55 170,57 200,63 230,57 260,55 289,60 312,67 337,73 358,76 320,82 281,88 244,94 200,97 156,94 119,88 80,82"/>
-                <path class="contour-points" d="M18 76h.01M37 64h.01M61 49h.01M92 32h.01M119 21h.01M147 17h.01M173 26h.01M200 35h.01M227 26h.01M253 17h.01M281 21h.01M308 32h.01M339 49h.01M363 64h.01M382 76h.01M343 95h.01M280 117h.01M200 127h.01M120 117h.01M57 95h.01M42 76h.01M63 73h.01M88 67h.01M111 60h.01M140 55h.01M170 57h.01M200 63h.01M230 57h.01M260 55h.01M289 60h.01M312 67h.01M337 73h.01M358 76h.01M320 82h.01M281 88h.01M244 94h.01M200 97h.01M156 94h.01M119 88h.01M80 82h.01"/>
+              <div class="viewfinder-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+              <svg class="contour" viewBox="0 0 264 112" fill="none" aria-hidden="true">
+                <path class="crosshairs" d="M0 56h264M132 0v112"/>
+                <polygon class="contour-line" points="14,58 29,50 45,43 62,31 82,23 100,22 116,28 132,33 148,27 164,21 183,23 203,33 220,43 235,52 250,58 225,72 200,84 169,94 132,98 70,85"/>
+                <polygon class="contour-line contour-inner" points="26,58 45,55 64,51 84,48 102,46 117,47 132,49 147,47 162,46 180,48 200,51 219,55 238,58 220,62 197,67 172,72 132,76 92,72 67,67 44,62"/>
+                <path class="contour-points" d="M14 58h.01m15 -8h.01m16 -7h.01m17 -12h.01m20 -8h.01m18 -1h.01m16 6h.01m16 5h.01m16 -6h.01m16 -6h.01m19 2h.01m20 10h.01m17 10h.01m15 9h.01m15 6h.01m-25 14h.01m-25 12h.01m-31 10h.01m-37 4h.01m-62 -13h.01M26 58h.01m19 -3h.01m19 -4h.01m20 -3h.01m18 -2h.01m15 1h.01m15 2h.01m15 -2h.01m15 -1h.01m18 2h.01m20 3h.01m19 4h.01m19 3h.01m-18 4h.01m-23 5h.01m-25 5h.01m-40 4h.01m-40 -4h.01m-25 -5h.01m-23 -5h.01"/>
               </svg>
-              <p>Start the camera to see your own landmarks.</p>
             </div>
-            <p class="label stage-index" aria-hidden="true"><span>40 points</span><span>Outer + inner lip</span></p>
+            <div class="stage-foot">
+              <p>Start the camera to see your own outline.</p>
+              <p class="label stage-index">40 points</p>
+            </div>
           </div>
           <div class="face-guide" id="faceGuide" hidden>
             <div class="face-box" aria-hidden="true"></div>
@@ -110,47 +105,59 @@
           <p id="modelPill" class="model-state">Model: not loaded</p>
           <p id="trackStats" class="tracking-stats"></p>
         </div>
-        <p class="status-line" id="statusLine" role="status">Start the camera when you’re ready.</p>
+        <div class="capture-feedback">
+          <p class="status-line" id="statusLine" role="status">Start the camera when you’re ready.</p>
+          <a class="review-link" id="reviewClip" href="#clips" hidden>Review clip</a>
+        </div>
       </section>
 
       <section class="clips" id="clips" aria-labelledby="clips-title">
-        <div class="section-head">
-          <h2 id="clips-title">Session clips</h2>
-          <p class="clip-count" id="clipCount" aria-live="polite">0 clips</p>
+        <div class="notebook-heading">
+          <div class="section-head">
+            <h2 id="clips-title">Notebook</h2>
+            <p class="clip-count" id="clipCount" aria-live="polite">0 clips</p>
+          </div>
+          <p class="notebook-intro">Review a take and write down what it means.</p>
+          <p class="clip-policy">Save a note to keep its clip in this browser. Unsaved clips expire when you leave.</p>
         </div>
-        <ul class="clip-list" id="clipList">
-          <li class="clip-empty" id="clipEmpty">
-            <svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-              <path d="M4 7h24v18H4zM4 12h24M4 20h24M9 7v5m7-5v5m7-5v5M9 20v5m7-5v5m7-5v5"/>
-            </svg>
-            <strong>No clips yet</strong>
-            <p>Start the camera, then choose <strong>Record clip</strong>. Your recording will appear here.</p>
-          </li>
-        </ul>
-        <p class="clip-policy">Download anything you want to keep. This tab holds the latest 12 clips until you refresh or close it.</p>
+        <div class="notebook-pages">
+          <ul class="clip-list" id="clipList">
+            <li class="clip-empty" id="clipEmpty">
+              <span class="empty-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/>
+                </svg>
+              </span>
+              <strong>Your notebook is empty.</strong>
+              <p>Record a clip to start your first note.</p>
+            </li>
+          </ul>
+          <p class="notebook-status" id="notebookStatus" role="status"></p>
+        </div>
       </section>
     </div>
 
     <section class="guide" id="howCard" aria-labelledby="guide-title">
       <div>
-        <p class="label">First session</p>
-        <h2 id="guide-title">How it works</h2>
+        <h2 id="guide-title">Your first take</h2>
       </div>
       <div class="guide-body">
         <ol>
-          <li><strong>Turn on your camera.</strong> Choose <strong>Start camera</strong> and allow access in the browser.</li>
-          <li><strong>Move into view.</strong> Move your lips and watch the outline follow. If the model can’t load, a framing guide appears.</li>
-          <li><strong>Keep a take.</strong> Record a clip or save a snapshot. Snapshots include the outline when tracking is active.</li>
+          <li><strong>Start camera.</strong> Allow video access in your browser.</li>
+          <li><strong>Frame your mouth.</strong> Watch the red outline follow your lips. You can still record if tracking is unavailable.</li>
+          <li><strong>Record and review.</strong> Record up to one minute. Play your clip, then write a note or download the video.</li>
         </ol>
-        <p class="honest-note"><strong>About transcription</strong><br>This prototype shows lip movement. It cannot turn speech into text.</p>
+        <p class="honest-note"><strong>About transcription</strong><br>Lip tracking shows movement. It cannot turn speech into text.</p>
       </div>
     </section>
   </main>
 
   <footer class="shell site-footer">
-    <span>Silent-Speech Notes</span>
+    <span>Video only. No microphone access.</span>
     <a href="privacy.html">Camera and privacy</a>
   </footer>
+  <script src="note-store.js"></script>
+  <script src="notebook.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

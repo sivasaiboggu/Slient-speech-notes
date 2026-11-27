@@ -23,6 +23,9 @@ const cases = [
   ['Link and focus color on paper', 'accent', 'paper', 4.5],
   ['Focus against control fill', 'accent', 'surface', 3],
   ['Control outline against paper', 'outline', 'paper', 3],
+  ['Control outline against raised editor', 'outline', 'raised', 3],
+  ['Button text against raised editor', 'ink', 'raised', 4.5],
+  ['Recording error text on paper', 'danger', 'paper', 4.5],
   ['Primary control text', 'action-text', 'action', 4.5],
   ['Primary control hover text', 'action-text', 'action-hover', 4.5],
   ['Primary control pressed text', 'action-text', 'action-active', 4.5],
@@ -34,6 +37,7 @@ const cases = [
   ['Live labels on opaque badge', 'stage-ink', 'stage-badge', 4.5],
   ['Recording timer on opaque badge', 'stage-record', 'stage-badge', 4.5],
   ['Contour against dark keyline', 'signal', 'signal-keyline', 3],
+  ['Framing brackets on the viewfinder', 'signal', 'stage', 3],
 ];
 
 console.log('| Pair | Light | Dark | Minimum |');
